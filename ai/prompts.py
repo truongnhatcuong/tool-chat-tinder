@@ -1,4 +1,21 @@
-"""System prompts and prompt formatting for Tinder AI Assistant."""
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def load_my_profile() -> str:
+    """Load user's personal background from thong_tin.md if it exists."""
+    for filename in ["thong_tin.md", "thông tin.md", "profile.md"]:
+        path = BASE_DIR / filename
+        if path.exists():
+            try:
+                content = path.read_text(encoding="utf-8").strip()
+                if content:
+                    return content
+            except Exception:
+                pass
+    return ""
+
 
 TINDER_SYSTEM_PROMPT = """Bạn là AI hỗ trợ soạn tin nhắn Tinder thay cho tôi. Viết như người thật đang chat Tinder: tự nhiên, ngắn, đời thường, không lộ cảm giác chatbot, không cố làm cuộc trò chuyện "hay" quá mức, không phỏng vấn, không cần tin nào cũng có câu hỏi.
 
@@ -25,8 +42,10 @@ Không biến chat thành bảng câu hỏi (b thích gì? hay đi đâu? làm n
 6. ĐỌC ĐÚNG CONTEXT
 Đọc toàn bộ lịch sử gần nhất: chủ đề đang nói, ai hỏi ai, câu nào đã hỏi (không hỏi lại), thông tin đã biết, cách xưng hô, mood, họ trả lời dài hay ngắn. Không chỉ đọc tin cuối. Không đổi chủ đề vô lý.
 
-7. KHÔNG TỰ BỊA
-Tuyệt đối không bịa về tôi: nơi từng đi, món thích, quán cafe hay ghé, công việc, sở thích, quê quán, trải nghiệm — nếu dữ liệu đầu vào không có. Không biết thì dùng câu trung tính.
+7. THÔNG TIN VỀ TÔI & KHÔNG TỰ BỊA
+- Đã được cung cấp ở phần 'THÔNG TIN VỀ TÔI (CHỦ TÀI KHOẢN)'. Khi bạn ấy hỏi về tôi (quê quán, nơi ở, tuổi, năm sinh, trường lớp, nghề nghiệp, sở thích, thói quen...), BẮT BUỘC trả lời chính xác dựa theo thông tin này.
+- Cách trả lời: ngắn gọn, tự nhiên theo đúng phong cách chat của tôi (không khoe khoang, không liệt kê như đọc lý lịch hay CV).
+- Nếu bạn ấy hỏi thông tin nào không có trong file: hãy trả lời tự nhiên, trung tính, tuyệt đối không tự bịa thông tin nhạy cảm.
 
 8. NEW MATCH (0-2 tin) / WARM_UP (3-6) / ACTIVE_CHAT (7-20) / DEEP_CHAT (>20)
 NEW_MATCH: không đọc bio rồi cố hỏi ngay, không đào chuyện tình cảm, không hỏi đang tìm mối quan hệ gì / mẫu người yêu / sở thích hàng loạt, không cố tìm điểm chung. Bio "tìm ny" thì chỉ chào đơn giản: "hello b :))", "chào nha", "ủa match r nè :))".
@@ -111,9 +130,12 @@ def build_chat_prompt(
     else:
         stage = "DEEP_CHAT"
 
+    my_profile = load_my_profile()
+    my_profile_section = f"\nTHÔNG TIN VỀ TÔI (CHỦ TÀI KHOẢN - DÙNG ĐỂ GIỚI THIỆU CHÍNH XÁC KHI ĐƯỢC HỎI):\n{my_profile}\n" if my_profile else ""
+
     context_text = f"""CONVERSATION_STAGE: {stage}
 LAST_SENDER: match (họ vừa nhắn)
-
+{my_profile_section}
 MATCH PROFILE:
 - Tên: {name or 'Unknown'}
 - Tuổi: {age or 'Chưa rõ'}

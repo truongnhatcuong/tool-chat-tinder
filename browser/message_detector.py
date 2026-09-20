@@ -57,6 +57,10 @@ class MessageDetector:
                         isOutgoing = true;
                         text = rawText.replace(/^(Bạn|You)\\s*:\\s*/i, '').trim();
                         if (!text) continue;
+                    } else {
+                        // Screen-reader label "<Name>:\\n<message>" on their bubbles
+                        const lm = rawText.match(/^[^\\n:]{1,40}:\\s*\\n([\\s\\S]+)$/);
+                        if (lm) text = lm[1].trim();
                     }
                     if (isOutgoing) {
                         // already known as ours

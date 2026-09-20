@@ -4,42 +4,24 @@ from ai.client import LLMClient
 from config.settings import get_settings
 from utils.logger import logger
 
-OPENER_SYSTEM_PROMPT = """Bạn là một chàng trai Việt Nam trẻ trung, hài hước, ga-lăng và ăn nói cực kỳ có duyên trên Tinder.
-Nhiệm vụ: Viết 1 tin nhắn mở lời (opener) đầu tiên làm quen bạn nữ vừa mới match.
+OPENER_SYSTEM_PROMPT = """Bạn soạn hộ tôi tin nhắn ĐẦU TIÊN trên Tinder cho một người vừa match. Viết như một người đang lướt Tinder trên điện thoại, KHÔNG như AI hay pickup line.
 
-NGUYÊN TẮC QUAN TRỌNG NHẤT - TỰ NHIÊN NHƯ CON NGƯỜI (KHÔNG MÙI BOT):
-1. ĐÚNG BẢN CHẤT CỦA TIN NHẮN MỞ ĐẦU (OPENER):
-   - Tin nhắn đầu tiên CHỈ CẦN chào hỏi vui vẻ, tự nhiên + kèm một lời khen nhẹ, trêu duyên dáng hoặc nhận xét thú vị về nụ cười/gu ảnh để tạo thiện cảm.
-   - Cực kỳ ngắn gọn: Đúng 1 câu (hoặc tối đa 2 câu rất ngắn), gõ nhanh tự nhiên như một người con trai thật đang cầm điện thoại nhắn tin.
-   - BẮT BUỘC tuân thủ hướng dẫn xưng hô dựa theo tuổi ở phần thông tin match.
+PHONG CÁCH: người Việt trẻ, chữ thường, cực ngắn, tự nhiên. Có thể :)) =)) kk, không lạm dụng.
 
-2. QUY TẮC XƯNG HÔ THÔNG MINH (THEO TUỔI):
-   - Nếu bạn nữ nhỏ hơn tuổi (được hướng dẫn xưng anh - em): Xưng 'anh' - gọi 'em' hoặc gọi trực tiếp tên bạn ấy (ví dụ: "Chào [Tên] nha :D", "Hello [Tên] nè :))").
-   - Nếu bạn nữ bằng tuổi, lớn hơn tuổi, hoặc CHƯA RÕ TUỔI: BẮT BUỘC xưng 'mình' - gọi 'bạn' hoặc gọi trực tiếp tên bạn ấy (CẤM tự ý xưng anh - gọi em khi chưa biết tuổi).
-   - Luôn ưu tiên gọi tên bạn nữ thân mật và tự nhiên.
+TIN ĐẦU TIÊN: 2-8 từ. Chỉ cần phá băng. Ví dụ đúng phong cách:
+"hello b :))" / "chào nha =))" / "ủa match r nè :))" / "hello hello" / "chào b nha" / "ê chào nha :))"
+Mỗi lần viết KHÁC nhau, đừng lặp một mẫu.
 
-3. CẤM TUYỆT ĐỐI NHỒI NHÉT CÂU HỎI VÀO TIN ĐẦU TIÊN:
-   - TUYỆT ĐỐI KHÔNG hỏi dồn dập về thói quen, lịch trình, cuối tuần (CẤM các câu như: "cuối tuần em thường thích đi đâu chơi hay có thói quen gì đặc biệt không nè?", "em hay đi quán nào chia sẻ anh với").
-   - LÝ DO: Người thật nhắn tin không ai vừa chào xong đã tra khảo như khảo sát thị trường. Những câu hỏi sở thích/cuối tuần đó ĐỂ DÀNH CHO ĐOẠN TIN NHẮN SAU (khi đối phương đã rep lại).
-   - CẤM gộp 3 trong 1: Chào + Khen ngợi sáo rỗng + Tra hỏi thói quen. Tin nhắn dài ngoằng như văn mẫu sẽ khiến đối phương thấy máy móc, sượng và lười trả lời.
+TUYỆT ĐỐI KHÔNG:
+- Khen ngoại hình/nụ cười ('nụ cười tươi', 'nhìn xịn'), pickup line, 'phải ghé qua chào liền', 'định mệnh', 'profile khiến tò mò'.
+- Hỏi bất cứ câu nào (không phỏng vấn, không hỏi sở thích/đi chơi/tìm người yêu).
+- Gọi tên kèm 'nha :D' kiểu chăm sóc khách hàng, không dùng ':D'.
+- Suy diễn điểm chung ('giống nhau ghê', 'trùng hợp ghê') khi không có dữ liệu.
+- Dùng bio chung chung (tìm ny, thích đi chơi, nghe nhạc, ăn uống, du lịch, vui vẻ...). Bio chỉ được nhắc khi có chi tiết CỰC cụ thể, nổi bật (nuôi 4 con mèo, nghiện Valorant, học tiếng Hàn, fan MU...), và khi đó nhắc rất nhẹ, vd 'ủa b cũng chơi valo à :))'. Nghi ngờ thì bỏ qua bio, chỉ chào.
+- Bịa thông tin về tôi.
 
-4. TỪ NGỮ VÀ PHONG CÁCH:
-   - Dùng từ ngữ đời thường của giới trẻ, vui tươi: nha, nè, á, ghê, :D, :))
-   - CẤM từ ngữ tiếng Anh nửa mùa: "recommend", "suggest", "vibe", "match", "profile", "crush".
-   - CẤM văn vở dịch máy hay sến súa: "trận cầu kịch tính", "kết nối tâm hồn", "định mệnh", "cuốn hút ghê gớm", "nụ cười tỏa nắng".
-
-VÍ DỤ MẪU ĐẠT CHUẨN 10/10 (TỰ NHIÊN, NGẮN GỌN, DUYÊN DÁNG):
-- Khi bạn nữ nhỏ tuổi hơn (xưng anh - gọi em/tên):
-  + "Chào Tín nha :D Nhìn nụ cười em tươi và duyên ghê á!"
-  + "Hello Tín nè :)) Thấy em cười nhìn năng lượng ghê, match cái phải vào chào liền nè!"
-  + "Chào Chíp nha :D Con gái mà mê bida là anh thấy hơi bị ngầu rồi đó nè!"
-- Khi bạn nữ bằng tuổi / lớn hơn / chưa rõ tuổi (xưng mình - gọi bạn/tên):
-  + "Chào Tín nha :D Nhìn nụ cười bạn tươi và duyên ghê á!"
-  + "Hello bạn nè :)) Thấy ảnh bạn nhìn năng lượng ghê, match cái phải ghé qua chào liền nè!"
-  + "Chào Ly nè :)) Gu ảnh của bạn nhìn xịn mà có nét riêng ghê á!"
-  + "Chào bạn nha :D Thấy match là mình phải ghé qua chào một tiếng liền nè :))"
-
-Chỉ trả về DUY NHẤT nội dung tin nhắn cần gửi. Không bọc dấu ngoặc kép, không giải thích."""
+Nguyên tắc vàng: thiếu context thì ÍT hơn > NHIỀU hơn.
+Chỉ trả về ĐÚNG 1 tin nhắn, không ngoặc kép, không giải thích."""
 
 
 class OpenerService:
@@ -73,16 +55,16 @@ class OpenerService:
         if match_age is not None:
             if match_age <= my_age - 2:
                 pronoun_guide = f"Bạn nữ ({match_age} tuổi) nhỏ tuổi hơn bạn ({my_age} tuổi) -> Hãy xưng 'anh' - gọi 'em' hoặc gọi tên '{name}'."
-                fallback_reply = f"Chào {name} nha :D Thấy match là anh phải ghé qua chào một tiếng liền nè :))"
+                fallback_reply = "hello b :))"
             elif match_age > my_age:
                 pronoun_guide = f"Bạn nữ ({match_age} tuổi) lớn hơn bạn ({my_age} tuổi) -> Hãy xưng 'mình' - gọi 'bạn' hoặc gọi tên '{name}' (TUYỆT ĐỐI không xưng anh - gọi em)."
-                fallback_reply = f"Chào {name} nha :D Thấy match là mình phải ghé qua chào một tiếng liền nè :))"
+                fallback_reply = "hello b :))"
             else:
                 pronoun_guide = f"Bạn nữ ({match_age} tuổi) sàn sàn bằng tuổi bạn ({my_age} tuổi) -> Hãy xưng 'mình' - gọi 'bạn' hoặc gọi tên '{name}'."
-                fallback_reply = f"Chào {name} nha :D Thấy match là mình phải ghé qua chào một tiếng liền nè :))"
+                fallback_reply = "hello b :))"
         else:
             pronoun_guide = f"Chưa rõ tuổi bạn nữ -> Mặc định xưng hô lịch sự: 'mình' - gọi 'bạn' hoặc gọi tên '{name}' (TUYỆT ĐỐI không tự ý gọi em hay xưng anh khi chưa biết tuổi)."
-            fallback_reply = f"Chào {name} nha :D Thấy match là mình phải ghé qua chào một tiếng liền nè :))"
+            fallback_reply = "hello b :))"
 
         user_prompt = f"""THÔNG TIN PROFILE MATCH:
 - Tên: {name}
@@ -94,11 +76,7 @@ class OpenerService:
 - Sở thích: {interests_str or 'Không có'}
 - Khoảng cách / Địa điểm: {distance or 'Chưa rõ'}
 
-Hãy viết 1 tin nhắn mở lời làm quen đầu tiên cho {name}:
-- Chào hỏi tự nhiên, vui vẻ + 1 lời khen nhẹ hoặc nhận xét duyên dáng về nụ cười/gu ảnh/nét thú vị.
-- Tuân thủ hướng dẫn xưng hô: {pronoun_guide}
-- TUYỆT ĐỐI KHÔNG hỏi dồn thói quen, sở thích hay cuối tuần đi đâu (để dành câu hỏi cho các tin sau).
-- Độ dài: Đúng 1 câu (hoặc tối đa 2 câu rất ngắn), tự nhiên 100% như người thật:"""
+Viết đúng 1 tin chào đầu tiên, 2-8 từ, không khen, không hỏi, không pickup line. Xưng hô (nếu cần): {pronoun_guide}"""
 
         messages = [
             {"role": "system", "content": OPENER_SYSTEM_PROMPT},
@@ -109,7 +87,7 @@ Hãy viết 1 tin nhắn mở lời làm quen đầu tiên cho {name}:
             f"Generating personalized opener for {name} (Age: {match_age or 'Unknown'}, Bio: '{bio[:30]}')..."
         )
         try:
-            reply = await self.llm_client.chat(messages, temperature=0.75, max_tokens=60)
+            reply = await self.llm_client.chat(messages, temperature=0.9, max_tokens=30)
             clean_reply = reply.strip().strip('"').strip("'")
             return clean_reply
         except Exception as e:

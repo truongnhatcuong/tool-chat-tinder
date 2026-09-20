@@ -88,7 +88,8 @@ class AutoSwipeEngine:
         max_swipes: int = 100,
         min_delay: float = 1.8,
         max_delay: float = 3.5,
-        on_match_callback: Callable[[dict], Coroutine[Any, Any, None]] | None = None
+        on_match_callback: Callable[[dict], Coroutine[Any, Any, None]] | None = None,
+        should_stop: Callable[[], bool] | None = None
     ) -> dict[str, int]:
         """
         Start auto-swiping right (Like) until out of likes or max_swipes reached.
@@ -105,6 +106,9 @@ class AutoSwipeEngine:
         from browser.popup_handler import dismiss_blocking_popups
 
         while self._is_running and self.total_swiped < max_swipes:
+            if should_stop and should_stop():
+                logger.info("Auto-like dừng do Pause/Emergency Stop.")
+                break
             # Something else (opener/scanner) may have navigated away: return to recs
             if "/app/recs" not in (self.page.url or ""):
                 logger.info("Đã bị chuyển trang, quay lại /app/recs để tiếp tục like...")
@@ -134,6 +138,8 @@ class AutoSwipeEngine:
             delay = random.uniform(min_delay, max_delay)
             logger.info(f"[{self.total_swiped + 1}] Đang thích {name_label}... (Delay {delay:.1f}s)")
             await asyncio.sleep(delay)
+            if not self._is_running or (should_stop and should_stop()):
+                break
 
             # 5. Send LIKE via Right Arrow keyboard shortcut (native & reliable)
             await self.page.keyboard.press("ArrowRight")

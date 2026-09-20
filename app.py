@@ -214,6 +214,8 @@ class TinderAppController:
         reply_text, is_safe_for_auto, intent = await self.ai_generator.generate_response(
             state, bundled_messages
         )
+        if not reply_text.strip():
+            return
 
         # Save AI reply to DB
         reply_id = await ReplyService.record_reply(
@@ -347,22 +349,36 @@ class TinderAppController:
             self.window.conversation_panel.display_messages(recent_msgs)
             self.window.reply_panel.current_conversation_id = tinder_id
 
+    def stop_auto_swipe(self):
+        engine = getattr(self, "_swipe_engine", None)
+        if engine:
+            engine.stop()
+
     async def handle_auto_swipe(self):
         """Trigger auto-liking on recs until likes run out."""
         if not self.browser_mgr.page or self.browser_mgr.page.is_closed():
             logger.warning("Browser is not active for auto-swipe.")
             return
         if getattr(self, "_swiping", False):
-            logger.info("Auto-like is already running.")
+            # Clicking again while running = stop
+            self.stop_auto_swipe()
+            self.window.status_bar.showMessage("Đã dừng Auto-Like.", 6000)
             return
         from browser.auto_swipe import AutoSwipeEngine
         engine = AutoSwipeEngine(self.browser_mgr.page)
-        self.window.status_bar.showMessage("Đang tự động like thẻ cho đến khi hết lượt...")
+        self._swipe_engine = engine
+        self.window.btn_auto_swipe.setText("⏹ Dừng Auto-Like")
+        self.window.status_bar.showMessage("Đang tự động like thẻ (bấm lại để dừng)...")
         self._swiping = True
         try:
-            results = await engine.run(max_swipes=150)
+            results = await engine.run(
+                max_swipes=150,
+                should_stop=lambda: self.settings.is_paused or self.settings.emergency_stop,
+            )
         finally:
             self._swiping = False
+            self._swipe_engine = None
+            self.window.btn_auto_swipe.setText("⚡ Auto-Like (Hết lượt)")
         self.window.status_bar.showMessage(
             f"Hoàn tất quẹt: Đã like {results['swiped']}, Matches mới: {results['matches']}"
         )
@@ -373,8 +389,13 @@ class TinderAppController:
             logger.warning("Browser is not active for auto-opener.")
             return
         if getattr(self, "_swiping", False):
-            self.window.status_bar.showMessage("Đang auto-like, hãy chờ xong rồi mới thả thính.", 6000)
-            return
+            # Switch mode: stop auto-like, wait for it to finish, then run openers
+            logger.info("Dừng Auto-Like để chuyển sang thả thính...")
+            self.stop_auto_swipe()
+            for _ in range(40):
+                if not getattr(self, "_swiping", False):
+                    break
+                await asyncio.sleep(0.25)
         from browser.match_opener import MatchOpenerEngine
         from services.opener_service import OpenerService
         engine = MatchOpenerEngine(self.browser_mgr.page, OpenerService(self.llm_client))
@@ -438,7 +459,11 @@ class TinderAppController:
                         msgs = await detector.detect_messages_in_current_chat(
                             conv_id, conv_id, match_name
                         )
-                        sent_texts = getattr(self, "_sent_texts", {}).get(conv_id, set())
+                        sent_texts = set(getattr(self, "_sent_texts", {}).get(conv_id, set()))
+                        # Also include our outgoing messages stored in DB (e.g. openers)
+                        for dm in await MessageService.get_recent_messages(conv_id, limit=30):
+                            if dm["role"] == "outgoing":
+                                sent_texts.add(self._norm_text(dm["content"]))
                         for msg in msgs:
                             if msg["role"] == "incoming" and self._norm_text(msg["content"]) in sent_texts:
                                 continue

@@ -54,6 +54,10 @@ class ResponseGenerator:
         # 5. Clean reply (remove outer quotes if model added them)
         clean_reply = raw_reply.strip().strip('"').strip("'")
 
+        if clean_reply.upper().strip(". ") == "WAIT":
+            logger.info("Model returned WAIT; not sending anything.")
+            return "", False, intent.value
+
         # 6. Safety validation
         is_safe_content, safety_reason = SafetyValidator.validate_reply(clean_reply)
         if not is_safe_content:

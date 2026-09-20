@@ -19,7 +19,7 @@
     "default_match_mode": "AUTO"
   },
   "ai": {
-    "temperature": 0.7,
+    "temperature": 0.8,
     "max_tokens": 999,
     "max_history_messages": 20,
     "max_retries": 3,
@@ -30,12 +30,7 @@
       "id": "default",
       "name": "Tài khoản 1 (Chính)",
       "profile_dir": "./data/tinder_browser"
-    },
-    {
-      "id": "acc_1789901748",
-      "name": "tncuong2",
-      "profile_dir": "./data/profiles/acc_1789901748"
     }
   ],
-  "active_account_id": "acc_1789901748"
+  "active_account_id": "default"
 }

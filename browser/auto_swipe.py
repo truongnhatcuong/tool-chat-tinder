@@ -105,6 +105,12 @@ class AutoSwipeEngine:
         from browser.popup_handler import dismiss_blocking_popups
 
         while self._is_running and self.total_swiped < max_swipes:
+            # Something else (opener/scanner) may have navigated away: return to recs
+            if "/app/recs" not in (self.page.url or ""):
+                logger.info("Đã bị chuyển trang, quay lại /app/recs để tiếp tục like...")
+                await self.page.goto("https://tinder.com/app/recs", wait_until="domcontentloaded")
+                await asyncio.sleep(2.0)
+
             # 0. Automatically dismiss any blocking popups (e.g. 'Không quan tâm', 'Không phải bây giờ')
             await dismiss_blocking_popups(self.page)
 

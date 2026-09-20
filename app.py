@@ -174,7 +174,10 @@ class TinderAppController:
         # Automatically open and process unread messages for AUTO matches
         for m in matches:
             tinder_id = m.get("tinder_id")
-            if m.get("has_unread") and self.settings.global_auto_reply and not self.settings.is_paused:
+            if (
+                m.get("has_unread") and self.settings.global_auto_reply and not self.settings.is_paused
+                and not getattr(self, "_swiping", False)
+            ):
                 mode = await MatchService.get_mode(tinder_id)
                 if mode == "AUTO" and self.browser_mgr.page and not self.browser_mgr.page.is_closed():
                     current_url = self.browser_mgr.page.url or ""
@@ -349,10 +352,17 @@ class TinderAppController:
         if not self.browser_mgr.page or self.browser_mgr.page.is_closed():
             logger.warning("Browser is not active for auto-swipe.")
             return
+        if getattr(self, "_swiping", False):
+            logger.info("Auto-like is already running.")
+            return
         from browser.auto_swipe import AutoSwipeEngine
         engine = AutoSwipeEngine(self.browser_mgr.page)
         self.window.status_bar.showMessage("Đang tự động like thẻ cho đến khi hết lượt...")
-        results = await engine.run(max_swipes=150)
+        self._swiping = True
+        try:
+            results = await engine.run(max_swipes=150)
+        finally:
+            self._swiping = False
         self.window.status_bar.showMessage(
             f"Hoàn tất quẹt: Đã like {results['swiped']}, Matches mới: {results['matches']}"
         )
@@ -361,6 +371,9 @@ class TinderAppController:
         """Trigger reading profile and sending subtle flirty openers to new matches."""
         if not self.browser_mgr.page or self.browser_mgr.page.is_closed():
             logger.warning("Browser is not active for auto-opener.")
+            return
+        if getattr(self, "_swiping", False):
+            self.window.status_bar.showMessage("Đang auto-like, hãy chờ xong rồi mới thả thính.", 6000)
             return
         from browser.match_opener import MatchOpenerEngine
         from services.opener_service import OpenerService
@@ -381,6 +394,7 @@ class TinderAppController:
                     and self.settings.global_auto_reply
                     and not self.settings.is_paused
                     and not self.settings.emergency_stop
+                    and not getattr(self, "_swiping", False)
                 ):
                     from browser.match_opener import MatchOpenerEngine
                     from services.opener_service import OpenerService

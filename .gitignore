@@ -1,0 +1,82 @@
+# ==========================================
+# Python & Bytecode
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# ==========================================
+# Sensitive Credentials & Environment (.env)
+# ==========================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# ==========================================
+# Tinder Browser Sessions, Profiles & DB
+# ==========================================
+data/*
+!data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+
+# ==========================================
+# Debug Dumps, Screenshots & HTML Artifacts
+# ==========================================
+debug/*
+!debug/.gitkeep
+
+# ==========================================
+# Logs
+# ==========================================
+*.log
+logs/
+
+# ==========================================
+# Testing & Code Quality
+# ==========================================
+.pytest_cache/
+.coverage
+htmlcov/
+test-results/
+playwright-report/
+
+# ==========================================
+# IDE & System Files
+# ==========================================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+Desktop.ini

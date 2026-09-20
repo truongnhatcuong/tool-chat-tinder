@@ -1,0 +1,41 @@
+{
+  "browser": {
+    "headless": false,
+    "profile_dir": "./data/profiles/acc_1789901748",
+    "tinder_url": "https://tinder.com/",
+    "latitude": 16.0544,
+    "longitude": 108.2022
+  },
+  "scanner": {
+    "match_scan_interval": 10.0,
+    "message_scan_interval": 2.0
+  },
+  "automation": {
+    "message_debounce_seconds": 5.0,
+    "reply_delay_min": 3.0,
+    "reply_delay_max": 10.0,
+    "max_parallel_conversations": 5,
+    "max_ai_replies_per_minute": 6,
+    "default_match_mode": "AUTO"
+  },
+  "ai": {
+    "temperature": 0.7,
+    "max_tokens": 999,
+    "max_history_messages": 20,
+    "max_retries": 3,
+    "summary_trigger_count": 30
+  },
+  "accounts": [
+    {
+      "id": "default",
+      "name": "Tài khoản 1 (Chính)",
+      "profile_dir": "./data/tinder_browser"
+    },
+    {
+      "id": "acc_1789901748",
+      "name": "tncuong2",
+      "profile_dir": "./data/profiles/acc_1789901748"
+    }
+  ],
+  "active_account_id": "acc_1789901748"
+}

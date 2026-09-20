@@ -16,6 +16,7 @@ from conversations.manager import ConversationManager
 from conversations.queue import ConversationState
 from ai.client import LLMClient
 from ai.generator import ResponseGenerator
+from ai.memory import ConversationMemory
 from ai.classifier import IntentClassifier, IntentCategory
 from services.match_service import MatchService
 from services.message_service import MessageService
@@ -34,6 +35,7 @@ class TinderAppController:
         self.tinder_browser = TinderBrowser(self.browser_mgr)
         self.llm_client = LLMClient()
         self.ai_generator = ResponseGenerator(self.llm_client)
+        self.memory = ConversationMemory(self.llm_client)
         
         # Conversation manager with async AI handler callback
         self.conv_manager = ConversationManager(ai_handler=self.on_bundled_messages_ready)
@@ -200,19 +202,15 @@ class TinderAppController:
         """Triggered after debounce expires when messages are ready for AI processing."""
         logger.info(f"Processing AI reply for {state.match_name} ({len(bundled_messages)} messages)")
 
-        # Load full two-way history (incl. our own messages) so the reply follows the real conversation
+        # Per-user memory: full history of THIS conversation + saved summary/facts -> final context
+        memory_ctx = None
         try:
-            db_msgs = await MessageService.get_recent_messages(state.conversation_id, limit=20)
-            history = [{"sender": m["sender"], "content": m["content"]} for m in db_msgs]
-            n = len(bundled_messages)
-            if n and [h["content"] for h in history[-n:]] == list(bundled_messages):
-                history = history[:-n]
-            state.history = history
+            memory_ctx = await self.memory.build_context(state.conversation_id, bundled_messages)
         except Exception as e:
-            logger.debug(f"Could not load DB history: {e}")
+            logger.warning(f"Memory context failed, falling back to in-memory history: {e}")
 
         reply_text, is_safe_for_auto, intent = await self.ai_generator.generate_response(
-            state, bundled_messages
+            state, bundled_messages, memory=memory_ctx
         )
         if not reply_text.strip():
             return

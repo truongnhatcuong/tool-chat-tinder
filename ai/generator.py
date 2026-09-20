@@ -5,6 +5,7 @@ from ai.prompts import build_chat_prompt
 from ai.classifier import IntentClassifier, IntentCategory
 from ai.safety import SafetyValidator
 from ai.style_analyzer import StyleAnalyzer
+from ai.memory import ConversationContext
 from conversations.queue import ConversationState
 from utils.logger import logger
 
@@ -18,7 +19,8 @@ class ResponseGenerator:
     async def generate_response(
         self,
         state: ConversationState,
-        bundled_messages: list[str]
+        bundled_messages: list[str],
+        memory: "ConversationContext | None" = None,
     ) -> tuple[str, bool, str]:
         """
         Generate AI reply for the accumulated incoming messages.
@@ -45,7 +47,8 @@ class ResponseGenerator:
             summary=state.summary,
             style=style_str,
             recent_history=state.history[-15:],
-            new_message=combined_new_message
+            new_message=combined_new_message,
+            memory_block=memory.render() if memory else None,
         )
 
         # 4. Invoke LLM

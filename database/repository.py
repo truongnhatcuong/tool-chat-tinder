@@ -213,6 +213,16 @@ class MessageRepository:
         msgs.reverse()
         return msgs
 
+    async def get_all_messages(self, conversation_id: str) -> list[MessageModel]:
+        """All messages of ONE conversation in chronological order (never mixes conversations)."""
+        stmt = (
+            select(MessageModel)
+            .where(MessageModel.conversation_id == conversation_id)
+            .order_by(MessageModel.created_at, MessageModel.id)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def count_by_conversation(self, conversation_id: str) -> int:
         stmt = select(func.count(MessageModel.id)).where(MessageModel.conversation_id == conversation_id)
         result = await self.session.execute(stmt)

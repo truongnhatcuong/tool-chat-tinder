@@ -18,12 +18,14 @@
 ### Bước 1: Tạo và kích hoạt Virtual Environment
 
 **Windows:**
+
 ```powershell
 python -m venv .venv
 .venv\Scripts\activate
 ```
 
 **macOS / Linux:**
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -66,14 +68,20 @@ DEBUG=true
 ## 4. Hướng dẫn chạy ứng dụng
 
 ### Chạy ứng dụng Desktop (PySide6 GUI):
+
 ```bash
 python app.py
 ```
 
 ### Chạy Playwright Inspector để debug DOM trực tiếp:
+
 ```bash
 PWDEBUG=1 python app.py
 ```
+
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
 
 ---
 
@@ -91,12 +99,13 @@ PWDEBUG=1 python app.py
    - Tạm dừng trả lời match này (không sinh tin nhắn, không gửi).
 
 ### 🌟 Tính năng thông minh mới:
+
 - **Tự động chuyển sang OFF khi đi ngủ / báo bận / hẹn nhắn lại sau**:
-  - **Trường hợp 1 (Đi ngủ / Chúc ngủ ngon):** Đối phương nhắn *"ngủ ngon nha anh"*, *"em đi ngủ đây"*, *"mai nói chuyện tiếp nhé"*, *"g9"*...
+  - **Trường hợp 1 (Đi ngủ / Chúc ngủ ngon):** Đối phương nhắn _"ngủ ngon nha anh"_, _"em đi ngủ đây"_, _"mai nói chuyện tiếp nhé"_, _"g9"_...
     - AI gửi lại lời chúc ngủ ngon ấm áp, ngọt ngào (không hỏi thêm câu mới).
     - Match tự động chuyển sang `OFF` (hiển thị `💤 Ngủ ngon (OFF)`).
-  - **Trường hợp 2 (Báo bận / Hẹn nhắn sau / Đi làm):** Đối phương nhắn *"em bận xíu"*, *"tí em nhắn lại sau nhé"*, *"lát nc sau nha"*, *"chuẩn bị vào ca rồi"*, *"hôm khác nói chuyện tiếp"*, *"rảnh nhắn sau"*...
-    - AI đáp lại thông cảm, lịch sự và thoải mái (ví dụ: *"Oke em, cứ lo việc đi nhé, khi nào rảnh nhắn anh sau nè!"* - không hỏi thêm câu mới dồn dập).
+  - **Trường hợp 2 (Báo bận / Hẹn nhắn sau / Đi làm):** Đối phương nhắn _"em bận xíu"_, _"tí em nhắn lại sau nhé"_, _"lát nc sau nha"_, _"chuẩn bị vào ca rồi"_, _"hôm khác nói chuyện tiếp"_, _"rảnh nhắn sau"_...
+    - AI đáp lại thông cảm, lịch sự và thoải mái (ví dụ: _"Oke em, cứ lo việc đi nhé, khi nào rảnh nhắn anh sau nè!"_ - không hỏi thêm câu mới dồn dập).
     - Match tự động chuyển sang `OFF` (hiển thị `⏳ Bận / Nhắn sau (OFF)`) để không gửi thêm tin nhắn làm phiền lúc họ đang bận!
   - Nếu bạn chủ động bấm gửi một câu kết thúc / đi ngủ / báo bận, match cũng tự động đưa về `OFF`.
 - **Tự động dọn dẹp khi Hủy tương hợp (Auto-Cleanup on Unmatch)**:

@@ -83,7 +83,8 @@ def build_chat_prompt(
     summary: str | None,
     style: str | None,
     recent_history: list[dict[str, str]],
-    new_message: str
+    new_message: str,
+    memory_block: str | None = None,
 ) -> list[dict[str, str]]:
     """Assemble system and user messages for OpenAI-compatible chat completions."""
     interests_str = ", ".join(interests) if isinstance(interests, list) else (interests or "None")
@@ -132,6 +133,22 @@ def build_chat_prompt(
 
     my_profile = load_my_profile()
     my_profile_section = f"\nTHÔNG TIN VỀ TÔI (CHỦ TÀI KHOẢN - DÙNG ĐỂ GIỚI THIỆU CHÍNH XÁC KHI ĐƯỢC HỎI):\n{my_profile}\n" if my_profile else ""
+
+    if memory_block:
+        context_text = f"""{memory_block}
+{my_profile_section}
+MATCH PROFILE:
+- Tên: {name or 'Unknown'}
+- Tuổi: {age or 'Chưa rõ'}
+- Gợi ý xưng hô (chỉ dùng khi phần CÁCH XƯNG HÔ ở trên chưa rõ): {pronoun_instruction}
+- Bio (chỉ tham khảo): {bio or 'Không có bio'}
+- Sở thích (chỉ tham khảo, đừng hỏi về nó): {interests_str}
+
+NHIỆM VỤ: viết đúng 1 tin nhắn tiếp theo tôi có thể gửi. Ngắn (3-15 từ), phản hồi đúng TIN MỚI NHẤT của họ, đúng chủ đề hiện tại, giữ đúng cách xưng hô đang dùng, KHÔNG hỏi lại bất kỳ câu nào trong danh sách "đã hỏi rồi", KHÔNG bịa thông tin ngoài phần "đã biết" và thông tin về tôi."""
+        return [
+            {"role": "system", "content": TINDER_SYSTEM_PROMPT},
+            {"role": "user", "content": context_text},
+        ]
 
     context_text = f"""CONVERSATION_STAGE: {stage}
 LAST_SENDER: match (họ vừa nhắn)

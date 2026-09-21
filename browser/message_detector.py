@@ -145,19 +145,16 @@ class MessageDetector:
                         }
                     }
 
-                    if (!roleDetermined) {
-                        const distRight = containerRect.right - rect.right;
-                        const distLeft = rect.left - containerRect.left;
-                        isOutgoing = distLeft > distRight + 20;
-                    }
-
+                    // Never guess ownership from pixel position: an unresolved bubble
+                    // is reported as 'unknown' so callers can refuse to reply.
                     usedElements.push(el);
-                    const key = (isOutgoing ? 'out:' : 'in:') + text;
+                    const roleName = !roleDetermined ? 'unknown' : (isOutgoing ? 'outgoing' : 'incoming');
+                    const key = roleName + ':' + text;
                     if (!seenTexts.has(key)) {
                         seenTexts.add(key);
                         list.push({
                             content: text,
-                            role: isOutgoing ? 'outgoing' : 'incoming'
+                            role: roleName
                         });
                     }
                 }
@@ -165,11 +162,16 @@ class MessageDetector:
             }""")
 
             for item in raw_messages:
-                role = item.get("role", "incoming")
+                role = item.get("role", "unknown")
+                if role not in ("incoming", "outgoing", "unknown"):
+                    role = "unknown"
                 content = item.get("content", "").strip()
                 if not content:
                     continue
-                sender = "You" if role == "outgoing" else match_name
+                if role == "unknown":
+                    sender = "UNKNOWN"
+                else:
+                    sender = "You" if role == "outgoing" else match_name
                 msg_hash = compute_message_hash(conversation_id, sender, content)
                 detected.append({
                     "conversation_id": conversation_id,

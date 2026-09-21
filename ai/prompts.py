@@ -56,7 +56,7 @@ FALLBACK_SYSTEM_PROMPT = """Bạn là AI hỗ trợ soạn tin nhắn Tinder tha
 - Họ chỉ nhắn "ừ", "có á", ":))", "mình chưa", "thấy gì chụp đó", "cũng có" thì mình cũng NGẮN, không biến 2-4 từ của họ thành đoạn văn.
 
 3. REACTION FIRST - QUESTION OPTIONAL (quan trọng nhất)
-Luôn PHẢN ỨNG với nội dung vừa nhận trước, rồi mới cân nhắc có hỏi không. Tỷ lệ mong muốn: ~50% chỉ reaction/nhận xét, ~30% reaction + 1 câu hỏi ngắn, ~20% câu hỏi trực tiếp khi thật sự hợp lý.
+Luôn PHẢN ỨNG với nội dung vừa nhận trước, rồi mới cân nhắc có hỏi không. Tỷ lệ mong muốn: ~40% chỉ reaction/nhận xét, ~40% reaction + 1 câu hỏi ngắn hoặc chia sẻ nối sang chủ đề gần, ~20% câu hỏi trực tiếp khi hợp lý; không quá 2 lượt liền chỉ reaction khi đang làm quen.
 Vd họ nói "Mình chưa" (đang nói trekking): SAI "Vậy à, trekking thú vị lắm :D Bạn thường thích leo núi ở đâu?"; TỐT "chưa hả :))" / "bữa nào thử á" / "b hay leo chỗ nào z" (chỉ khi thật sự muốn hỏi).
 
 4. CẤM PATTERN AI
@@ -113,6 +113,7 @@ def build_chat_prompt(
     recent_history: list[dict[str, str]],
     new_message: str,
     memory_block: str | None = None,
+    guidance: str | None = None,
 ) -> list[dict[str, str]]:
     """Assemble system and user messages for OpenAI-compatible chat completions."""
     interests_str = ", ".join(interests) if isinstance(interests, list) else (interests or "None")
@@ -153,6 +154,7 @@ def build_chat_prompt(
     questions_section = f"\nDANH SÁCH CÂU HỎI THAM KHẢO (DÙNG ĐỂ KHƠI GỢI KHI CẦN THIẾT):\n{my_questions}\n" if my_questions else ""
 
     current_system_prompt = load_system_prompt()
+    guidance_section = f"\nGỢI Ý NHỊP TRẢ LỜI LƯỢT NÀY:\n{guidance}\n" if guidance else ""
 
     if memory_block:
         context_text = f"""{memory_block}
@@ -164,7 +166,7 @@ MATCH PROFILE:
 - Bio (chỉ tham khảo): {bio or 'Không có bio'}
 - Sở thích (chỉ tham khảo, đừng hỏi về nó): {interests_str}
 
-NHIỆM VỤ: Trả về kết quả dưới dạng JSON theo đúng cấu trúc ở mục "OUTPUT CONTRACT" trong System Prompt. Ngắn (3-15 từ/tin), phản hồi đúng TIN MỚI NHẤT của họ, đúng chủ đề hiện tại, giữ đúng cách xưng hô đang dùng, KHÔNG hỏi lại bất kỳ câu nào trong danh sách "đã hỏi rồi", KHÔNG bịa thông tin. Reaction trước, nhưng nếu họ trả lời cụt/mơ hồ, có chi tiết mới đáng khai thác, hoặc 2 lượt gần đây Cường chưa hỏi gì thì chủ động hỏi đúng 1 câu ngắn bám context. Không hiểu câu họ nói thì hỏi làm rõ, không đoán."""
+NHIỆM VỤ: Trả về kết quả dưới dạng JSON theo đúng cấu trúc ở mục "OUTPUT CONTRACT" trong System Prompt. Ngắn (3-15 từ/tin), phản hồi đúng TIN MỚI NHẤT của họ, đúng chủ đề hiện tại, giữ đúng cách xưng hô đang dùng, KHÔNG hỏi lại bất kỳ câu nào trong danh sách "đã hỏi rồi", KHÔNG bịa thông tin. Phản hồi đúng ý họ trước, có thể trêu/chia sẻ/khen nhẹ. KHÔNG hỏi sau mọi lượt: chỉ hỏi (đúng 1 câu) khi thật sự cần mở rộng chuyện; mỗi 2-3 lượt phải có ít nhất 1 lượt không hỏi, tối đa 2 lượt hỏi liền; nếu họ đã kể nhiều về một chủ đề thì không hỏi lại chủ đề đó. Không hiểu câu họ nói thì hỏi làm rõ, không đoán."""
         return [
             {"role": "system", "content": current_system_prompt},
             {"role": "user", "content": context_text},
@@ -187,8 +189,8 @@ LỊCH SỬ TIN NHẮN GẦN ĐÂY:
 
 TIN NHẮN MỚI NHẤT TỪ {name or 'BẠN ẤY'}:
 "{new_message}"
-
-NHIỆM VỤ: Trả về kết quả dưới dạng JSON theo đúng cấu trúc ở mục "OUTPUT CONTRACT". Ngắn (3-15 từ/tin), phản hồi đúng nội dung họ vừa nhắn, không bịa thông tin. Reaction trước rồi chủ động hỏi đúng 1 câu ngắn khi câu hỏi giúp họ kể tiếp, làm rõ câu mơ hồ hoặc khai thác chi tiết mới; tránh quá 2 lượt liên tiếp chỉ reaction trong WARM_UP/ACTIVE_CHAT. Không hỏi random, không hỏi lại điều đã biết, không đặt 2 câu hỏi. Xưng hô: {pronoun_instruction}."""
+{guidance_section}
+NHIỆM VỤ: Trả về kết quả dưới dạng JSON theo đúng cấu trúc ở mục "OUTPUT CONTRACT". Ngắn (3-15 từ/tin), phản hồi đúng nội dung họ vừa nhắn, không bịa thông tin. Phản hồi đúng ý trước, có thể trêu/chia sẻ/khen nhẹ; chỉ hỏi (đúng 1 câu) khi thật sự cần mở rộng chuyện, không hỏi sau mọi lượt (mỗi 2-3 lượt có ít nhất 1 lượt không hỏi, tối đa 2 lượt hỏi liền). Không hỏi lại chủ đề họ đã kể nhiều; không chốt bằng 'ghê z'. Thỉnh thoảng (không liên tục) khi vibe tốt có thể khen nhẹ vibe/cách nói chuyện/ảnh (không bắt buộc kèm câu hỏi). Không hỏi random, không hỏi lại điều đã biết, không đặt 2 câu hỏi. Xưng hô: {pronoun_instruction}."""
 
     return [
         {"role": "system", "content": current_system_prompt},

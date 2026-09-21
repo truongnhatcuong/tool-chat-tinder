@@ -37,6 +37,7 @@ class AIConfig(BaseModel):
     max_tokens: int = 150
     max_history_messages: int = 20
     max_retries: int = 3
+    max_regenerations: int = 2   # regenerate a failed reply this many times before giving up
     summary_trigger_count: int = 30
 
 

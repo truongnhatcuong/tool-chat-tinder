@@ -85,6 +85,27 @@ class MatchesPanel(QWidget):
         hint.setStyleSheet("color: #888888; font-size: 11px; padding: 0 6px 4px 6px;")
         layout.addWidget(hint)
 
+        bulk_row = QHBoxLayout()
+        bulk_row.setContentsMargins(6, 0, 6, 4)
+        self.btn_all_auto = QPushButton("⚡ AUTO tất cả")
+        self.btn_all_auto.setToolTip("Chuyển tất cả match sang AUTO")
+        self.btn_all_auto.setStyleSheet(
+            "QPushButton { background: #196F3D; color: white; font-weight: bold; border: none;"
+            " border-radius: 4px; padding: 5px 10px; } QPushButton:hover { background: #229954; }"
+        )
+        self.btn_all_auto.clicked.connect(lambda: self.set_all_modes("AUTO"))
+        bulk_row.addWidget(self.btn_all_auto)
+
+        self.btn_all_off = QPushButton("⛔ OFF tất cả")
+        self.btn_all_off.setToolTip("Tắt tự động cho tất cả match")
+        self.btn_all_off.setStyleSheet(
+            "QPushButton { background: #A93226; color: white; font-weight: bold; border: none;"
+            " border-radius: 4px; padding: 5px 10px; } QPushButton:hover { background: #C0392B; }"
+        )
+        self.btn_all_off.clicked.connect(lambda: self.set_all_modes("OFF"))
+        bulk_row.addWidget(self.btn_all_off)
+        layout.addLayout(bulk_row)
+
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet("""
             QListWidget {
@@ -127,6 +148,11 @@ class MatchesPanel(QWidget):
         self.list_widget.addItem(list_item)
         self.list_widget.setItemWidget(list_item, widget)
         self._items_map[tinder_id] = (list_item, widget)
+
+    def set_all_modes(self, mode: str):
+        """Set every match to `mode`; unchanged ones emit nothing, changed ones go through the normal mode signal."""
+        for _, widget in self._items_map.values():
+            widget.set_mode(mode)
 
     def update_match_mode(self, tinder_id: str, new_mode: str):
         """Update a specific match's mode programmatically."""

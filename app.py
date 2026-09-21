@@ -51,6 +51,11 @@ class TinderAppController:
         self._opener_task: asyncio.Task | None = None
         self._msg_monitor_task: asyncio.Task | None = None
         self._history_backfilled: set[str] = set()
+        # Style/question metadata of the reply awaiting send, per conversation.
+        # Persisted to memory only after the message is really sent.
+        self._pending_reply_meta: dict[str, dict] = {}
+        # Consecutive turns where no acceptable reply could be produced, per conversation.
+        self._giveup_counts: dict[str, int] = {}
         self._unread_conversations: set[str] = set()
         self._queued_message_hashes: set[str] = set()
         self._auto_scan_index = 0
@@ -313,12 +318,32 @@ class TinderAppController:
         out_messages, is_safe_for_auto, intent, meta = await self.ai_generator.generate_response(
             state, message_texts, memory=memory_ctx
         )
+        # They closed a topic ("hong á", "thôi bỏ qua"...): remember it so later turns stay off it.
+        if meta.get("closed_topic"):
+            try:
+                await self.memory.record_closed_topic(state.conversation_id, meta["closed_topic"])
+            except Exception as e:
+                logger.debug(f"Could not persist closed topic for {state.conversation_id}: {e}")
+
         if not out_messages:
-            # If AI says WAIT or no messages generated
+            if meta.get("gave_up"):
+                # Not a deliberate WAIT: nothing acceptable could be produced. Do not drop
+                # their message; let the monitor pick it up again (bounded number of retries).
+                count = self._giveup_counts.get(state.conversation_id, 0) + 1
+                self._giveup_counts[state.conversation_id] = count
+                if count <= 2:
+                    logger.info(f"Chưa có câu trả lời đạt chuẩn cho {state.match_name}, sẽ thử lại (lần {count}/2).")
+                    await MessageService.update_messages_status(message_hashes, "FAILED")
+                    self._queued_message_hashes.difference_update(message_hashes)
+                    return
+                logger.warning(f"Đã thử lại nhiều lần cho {state.match_name} mà không có câu đạt chuẩn; bỏ qua lượt này.")
+            # If AI says WAIT (or we gave up for good)
             await MessageService.update_messages_status(message_hashes, "IGNORED")
             return
+        self._giveup_counts.pop(state.conversation_id, None)
 
         gui_reply_text = "\n".join(out_messages)
+        self._pending_reply_meta[state.conversation_id] = meta
 
         # Save AI reply to DB
         import json
@@ -355,10 +380,12 @@ class TinderAppController:
             await MessageService.update_messages_status(message_hashes, "SENDING")
             
             all_sent = True
+            sent_messages: list[str] = []
             for i, msg in enumerate(out_messages):
                 sent = await self.sender.send_reply(state.conversation_id, msg, is_auto=True)
                 if sent:
                     await self._remember_sent(state.conversation_id, msg)
+                    sent_messages.append(msg)
                 else:
                     all_sent = False
                 
@@ -366,6 +393,7 @@ class TinderAppController:
                 if i < len(out_messages) - 1:
                     await asyncio.sleep(random.uniform(2.5, 4.5))
 
+            await self._record_reply_memory(state.conversation_id, sent_messages)
             if all_sent:
                 await ReplyService.mark_sent(reply_id)
                 await MessageService.update_messages_status(message_hashes, "SENT")
@@ -380,7 +408,7 @@ class TinderAppController:
         is_opener = len(state.history) == 0
         await self.memory.update_advanced_memory(
             state.conversation_id,
-            meta.get("intent", ""),
+            "",  # asked intent is persisted on real send (record_sent_reply)
             meta.get("topic", ""),
             meta.get("pattern_used", ""),
             is_opener=is_opener,
@@ -407,6 +435,30 @@ class TinderAppController:
             self.window.status_bar.showMessage(
                 f"{icon} [{state.match_name}] {log_desc}. Đã tự chuyển sang OFF.", 8000
             )
+
+    async def _record_reply_memory(self, conversation_id: str, sent_messages: list[str]) -> None:
+        """Persist questions_already_asked / last_reply_styles for messages that were really sent."""
+        meta = self._pending_reply_meta.pop(conversation_id, None) or {}
+        sent_messages = [m for m in sent_messages if m and m.strip()]
+        if not sent_messages:
+            return
+        try:
+            from ai.question_detector import is_question
+
+            question_texts = [m for m in sent_messages if is_question(m)]
+            for q in meta.get("question_texts", []):
+                if q in sent_messages and q not in question_texts:
+                    question_texts.append(q)
+            asked = bool(question_texts)
+            await self.memory.record_sent_reply(
+                conversation_id,
+                reply_style=meta.get("reply_style", "") or ("question" if asked else ""),
+                asked=asked,
+                question_key=meta.get("question_key", "") if asked else "",
+                question_texts=question_texts,
+            )
+        except Exception as e:
+            logger.debug(f"Could not persist reply memory for {conversation_id}: {e}")
 
     @staticmethod
     def _norm_text(text: str) -> str:
@@ -438,6 +490,7 @@ class TinderAppController:
             logger.info(f"Sending manually approved reply to {conversation_id}...")
             await self.sender.send_reply(conversation_id, text, is_auto=False)
             await self._remember_sent(conversation_id, text)
+            await self._record_reply_memory(conversation_id, [line for line in text.split("\n") if line.strip()])
             
             # Mark the latest reply as SENT so it doesn't get resent on mode switch
             recent_reply = await ReplyService.get_latest_reply(conversation_id)
@@ -473,8 +526,16 @@ class TinderAppController:
             last_msg = state.history[-1]["content"] if state.history else "hi"
             if last_msg:
                 self.window.reply_panel.set_suggestion(conversation_id, "Đang suy nghĩ lại...")
-                out_messages, _, _, _ = await self.ai_generator.generate_response(state, [last_msg])
+                memory_ctx = None
+                try:
+                    memory_ctx = await self.memory.build_context(conversation_id, [last_msg])
+                except Exception as e:
+                    logger.warning(f"Memory context failed for regenerate: {e}")
+                out_messages, _, _, regen_meta = await self.ai_generator.generate_response(
+                    state, [last_msg], memory=memory_ctx
+                )
                 if out_messages:
+                    self._pending_reply_meta[conversation_id] = regen_meta
                     gui_reply_text = "\n".join(out_messages)
                     self.window.reply_panel.set_suggestion(conversation_id, gui_reply_text)
                 else:
@@ -553,6 +614,7 @@ class TinderAppController:
                         pass
 
                 if all_sent:
+                    await self._record_reply_memory(tinder_id, [m.strip() for m in out_messages if m.strip()])
                     await ReplyService.mark_sent(recent_reply.id)
                     await MessageService.update_messages_status(message_hashes, "SENT")
                     if self.window.reply_panel.current_conversation_id == tinder_id:
@@ -797,8 +859,15 @@ class TinderAppController:
                                 sent_texts.add(self._norm_text(dm["content"]))
 
                         any_saved = False
+                        # An "incoming" bubble whose text we already sent is our own
+                        # message that was mislabelled; treat it as outgoing so we
+                        # never answer ourselves. Unknown-owner bubbles are never stored.
                         for msg in msgs:
                             if msg["role"] == "incoming" and self._norm_text(msg["content"]) in sent_texts:
+                                msg["role"] = "outgoing"
+                                msg["sender"] = "You"
+                        for msg in msgs:
+                            if msg["role"] == "unknown":
                                 continue
                             saved = await MessageService.save_message_if_new(
                                 conversation_id=msg["conversation_id"],
@@ -818,12 +887,21 @@ class TinderAppController:
                         # from Tinder's unreliable unread indicator. Walk backward
                         # from the newest bubble until our last outgoing bubble.
                         incoming_tail: list[dict] = []
+                        owner_unclear = False
                         for msg in reversed(msgs):
                             if msg["role"] == "outgoing":
                                 break
-                            if msg["role"] == "incoming":
-                                incoming_tail.append(msg)
+                            if msg["role"] == "unknown":
+                                owner_unclear = True
+                                break
+                            incoming_tail.append(msg)
                         incoming_tail.reverse()
+                        if owner_unclear:
+                            # Cannot tell who sent the newest bubble: do not guess, WAIT.
+                            logger.warning(
+                                f"Không xác định được người gửi tin mới nhất của {match_name}; bỏ qua lượt này (WAIT)."
+                            )
+                            incoming_tail = []
 
                         if mode in ("AUTO", "SUGGEST") and incoming_tail:
                             hashes = [msg["message_hash"] for msg in incoming_tail]

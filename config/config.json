@@ -7,22 +7,23 @@
     "longitude": 108.2022
   },
   "scanner": {
-    "match_scan_interval": 8.0,
+    "match_scan_interval": 4.0,
     "message_scan_interval": 10.0
   },
   "automation": {
     "message_debounce_seconds": 20.0,
-    "reply_delay_min": 6.0,
-    "reply_delay_max": 9.0,
+    "reply_delay_min": 4.0,
+    "reply_delay_max": 6.0,
     "max_parallel_conversations": 1,
     "max_ai_replies_per_minute": 3,
     "default_match_mode": "AUTO"
   },
   "ai": {
-    "temperature": 0.75,
-    "max_tokens": 500,
+    "temperature": 0.6,
+    "max_tokens": 1000,
     "max_history_messages": 20,
     "max_retries": 3,
+    "max_regenerations": 2,
     "summary_trigger_count": 30
   },
   "accounts": [

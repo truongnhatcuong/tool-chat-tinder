@@ -1,6 +1,8 @@
 """Auto-Opener service generating subtle, charming, profile-based Tinder opening lines."""
 from typing import Any
+import random
 from ai.client import LLMClient
+from ai.output_guard import build_retry_feedback, find_violations
 from config.settings import get_settings
 from utils.logger import logger
 
@@ -56,6 +58,15 @@ CẤM:
 - Không bắt buộc câu nào cũng kết thúc bằng câu hỏi.
 
 CHỈ TRẢ VỀ ĐÚNG 1 CÂU TIN NHẮN (không ngoặc kép, không giải thích)."""
+
+
+SAFE_OPENERS = [
+    "ơ match thiệt nè :))",
+    "ủa profile này cuốn nha",
+    "ê nhìn b quen quen á :))",
+    "ơ kìa, cuối cùng cũng match :))",
+    "app nay làm ăn được nè =))",
+]
 
 
 class OpenerService:
@@ -115,9 +126,21 @@ CẤM: Không dùng câu rập khuôn kiểu 'chào {name} nha :))' hay 'chào {
             f"Generating personalized opener for {name} (Age: {match_age or 'Unknown'}, Bio: '{bio[:30]}')..."
         )
         try:
-            reply = await self.llm_client.chat(messages, temperature=0.9, max_tokens=30)
+            reply = await self.llm_client.chat(messages, temperature=0.9, max_tokens=80)
             clean_reply = reply.strip().strip('"').strip("'")
+            problems = find_violations([clean_reply], [], is_opener=True, name=name)
+            if problems:
+                logger.warning(f"Opener for {name} violated rules, retrying once: {problems}")
+                retry = messages + [
+                    {"role": "assistant", "content": reply},
+                    {"role": "user", "content": build_retry_feedback(problems, json_reply=False)},
+                ]
+                reply = await self.llm_client.chat(retry, temperature=0.9, max_tokens=80)
+                clean_reply = reply.strip().strip('"').strip("'")
+                if find_violations([clean_reply], [], is_opener=True, name=name):
+                    logger.warning(f"Opener retry for {name} still invalid; using safe opener.")
+                    return random.choice(SAFE_OPENERS)
             return clean_reply
         except Exception as e:
             logger.error(f"Error generating opener: {e}")
-            return fallback_reply
+            return random.choice(SAFE_OPENERS)

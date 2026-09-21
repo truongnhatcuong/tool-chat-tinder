@@ -19,6 +19,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from ai.question_detector import is_question
 from database.db import get_db_session
 from database.repository import (
     ConversationRepository,
@@ -33,6 +34,10 @@ SUMMARIZE_MIN_OLD = 12     # fold old messages into memory only when at least th
 SUMMARIZE_CHUNK = 80       # max messages sent to the LLM per summarize call
 MAX_FACTS = 30
 MAX_ASKED = 12
+MAX_QUESTIONS_STORED = 30   # questions_already_asked kept per user
+MAX_STYLES_STORED = 6       # last_reply_styles kept per user
+MAX_CLOSED_TOPICS = 5       # topics the other person closed, kept per user
+CLOSED_TOPIC_TTL = 8        # a closed topic stays closed for this many of our sent replies
 
 SELF_TERMS = ["tui", "mình", "mik", "tớ", "anh", "em", "chị", "tao", "t"]
 ADDRESS_TERMS = ["b", "bạn", "cậu", "ông", "anh", "em", "chị", "mày", "m"]
@@ -75,12 +80,23 @@ class ConversationContext:
     recent_topics: list[str] = field(default_factory=list)
     recent_reply_patterns: list[str] = field(default_factory=list)
     new_messages: list[str] = field(default_factory=list)
+    questions_asked: list[str] = field(default_factory=list)     # questions_already_asked (persisted)
+    last_reply_styles: list[str] = field(default_factory=list)   # question/share/tease/flirt/compliment/...
+    last_reply_asked: list[bool] = field(default_factory=list)   # did each recent turn ask something
+    guidance: str = ""                                           # rhythm hints for this turn
+    closed_topics: list[dict] = field(default_factory=list)      # active closed topics (not expired)
+    reply_counter: int = 0                                       # how many replies we have really sent
 
     def render(self) -> str:
         """Text block dropped into the user prompt (facts, summary, recent, new message)."""
         facts = "\n".join(f"- {f}" for f in self.facts) or "- (chưa có)"
         asked = "\n".join(f"- {q}" for q in self.asked_by_me) or "- (chưa hỏi gì)"
-        recent = "\n".join(f"{m['who']}: {m['content']}" for m in self.recent) or "(chưa có tin nào)"
+        questions_stored = "\n".join(f"- {q}" for q in self.questions_asked[-MAX_QUESTIONS_STORED:]) or "- (chưa có)"
+        guidance_block = f"\n{self.guidance}\n" if self.guidance else ""
+        labels = {"tôi": "TÔI (đã gửi)", "họ": "HỌ (đối phương)"}
+        recent = "\n".join(
+            f"{labels.get(m['who'], m['who'])}: {m['content']}" for m in self.recent
+        ) or "(chưa có tin nào)"
         new = "\n".join(self.new_messages)
         return (
             f"CONVERSATION_STAGE: {self.stage} ({self.total_messages} tin)\n\n"
@@ -94,9 +110,11 @@ class ConversationContext:
             f"PATTERN GẦN ĐÂY: {', '.join(self.recent_reply_patterns[-5:]) or '(chưa có)'}\n\n"
             f"CÂU TÔI ĐÃ HỎI RỒI (KHÔNG HỎI LẠI):\n{asked}\n"
             f"CÁC INTENT ĐÃ HỎI (TUYỆT ĐỐI KHÔNG HỎI LẠI DƯỚI BẤT KỲ HÌNH THỨC NÀO): {', '.join(self.asked_intents) or '(chưa có)'}\n"
-            f"OPENER ĐÃ DÙNG (không dùng lại): {', '.join(self.used_openers) or '(chưa có)'}\n\n"
+            f"CÁC CÂU HỎI ĐÃ HỎI TRƯỚC ĐÂY (KHÔNG HỎI LẠI CÙNG VẤN ĐỀ, KỂ CẢ ĐỔI CÁCH HỎI):\n{questions_stored}\n"
+            f"OPENER ĐÃ DÙNG (không dùng lại): {', '.join(self.used_openers) or '(chưa có)'}\n"
+            f"{guidance_block}\n"
             f"{len(self.recent)} TIN GẦN NHẤT (cũ -> mới):\n{recent}\n\n"
-            f"TIN MỚI NHẤT CỦA HỌ (cần trả lời):\n{new}"
+            f"TIN MỚI NHẤT CỦA HỌ (đối phương, cần trả lời; các dòng TÔI ở trên là tin tôi đã gửi, KHÔNG trả lời chúng):\n{new}"
         )
 
 
@@ -153,7 +171,7 @@ def analyze_style(texts: list[str]) -> str:
     lower = sum(1 for t in texts if t[:1].islower() or not t[:1].isalpha()) / n
     abbr = sum(1 for t in texts if any(w in ABBREVIATIONS for w in _words(t))) / n
     emo = sum(1 for t in texts if EMOTICON_RE.search(t)) / n
-    ques = sum(1 for t in texts if "?" in t) / n
+    ques = sum(1 for t in texts if is_question(t)) / n
     length = (
         "rất ngắn" if avg_words <= 4 else "ngắn" if avg_words <= 10
         else "vừa" if avg_words <= 20 else "dài"
@@ -168,7 +186,7 @@ def analyze_style(texts: list[str]) -> str:
 
 
 def extract_asked_questions(outgoing: list[str]) -> list[str]:
-    asked = [t.strip() for t in outgoing if QUESTION_RE.search(t.strip())]
+    asked = [t.strip() for t in outgoing if is_question(t.strip())]
     return [q[:90] for q in asked[-MAX_ASKED:]]
 
 
@@ -267,6 +285,14 @@ class ConversationMemory:
             recent_reply_patterns=notes.get("recent_reply_patterns", []),
             topic=guess_topic(recent + [{"who": "họ", "content": t} for t in new_messages]),
             new_messages=list(new_messages),
+            questions_asked=notes.get("questions_already_asked", []),
+            last_reply_styles=notes.get("last_reply_styles", []),
+            last_reply_asked=notes.get("last_reply_asked", []),
+            closed_topics=[
+                e for e in notes.get("closed_topics", [])
+                if notes.get("reply_counter", 0) - int(e.get("at", 0) or 0) <= CLOSED_TOPIC_TTL
+            ],
+            reply_counter=notes.get("reply_counter", 0),
         )
 
     # ---- persistence helpers ----
@@ -282,6 +308,11 @@ class ConversationMemory:
             "used_openers": data.get("used_openers", []),
             "recent_topics": data.get("recent_topics", []),
             "recent_reply_patterns": data.get("recent_reply_patterns", []),
+            "questions_already_asked": [str(q) for q in data.get("questions_already_asked", []) if q],
+            "last_reply_styles": [str(s) for s in data.get("last_reply_styles", []) if s],
+            "last_reply_asked": [bool(a) for a in data.get("last_reply_asked", [])],
+            "closed_topics": [e for e in data.get("closed_topics", []) if isinstance(e, dict)],
+            "reply_counter": int(data.get("reply_counter", 0) or 0),
         }
 
     async def _save(self, conversation_id: str, summary: str, facts: list[str], until_id: int) -> None:
@@ -327,6 +358,67 @@ class ConversationMemory:
                 openers.append(sent_messages[0])
                 notes["used_openers"] = openers[-5:]
 
+            await profile_repo.upsert_profile(match_id=conversation_id, notes_json=notes)
+
+    async def record_sent_reply(
+        self,
+        conversation_id: str,
+        *,
+        reply_style: str = "",
+        asked: bool = False,
+        question_key: str = "",
+        question_texts: list[str] | None = None,
+    ) -> None:
+        """Persist what a reply that was ACTUALLY sent did (questions asked, style rhythm).
+
+        Called only after a real send so a rejected/regenerated suggestion never
+        pollutes `questions_already_asked` or `last_reply_styles`.
+        """
+        async with self._session() as session:
+            profile_repo = MatchProfileRepository(session)
+            existing = await profile_repo.get_by_match_id(conversation_id)
+            notes = (_parse_json(existing.notes_json) if existing and existing.notes_json else None) or {}
+
+            questions = [str(q) for q in notes.get("questions_already_asked", []) if q]
+            for q in question_texts or []:
+                q = q.strip()
+                if q and q not in questions:
+                    questions.append(q[:120])
+            notes["questions_already_asked"] = questions[-MAX_QUESTIONS_STORED:]
+
+            if question_key:
+                keys = notes.get("asked_intents", [])
+                if question_key not in keys:
+                    keys.append(question_key)
+                notes["asked_intents"] = keys[-MAX_QUESTIONS_STORED:]
+
+            if reply_style:
+                styles = [str(s) for s in notes.get("last_reply_styles", []) if s]
+                styles.append(reply_style)
+                notes["last_reply_styles"] = styles[-MAX_STYLES_STORED:]
+            flags = [bool(a) for a in notes.get("last_reply_asked", [])]
+            flags.append(bool(asked))
+            notes["last_reply_asked"] = flags[-MAX_STYLES_STORED:]
+            notes["reply_counter"] = int(notes.get("reply_counter", 0) or 0) + 1
+
+            await profile_repo.upsert_profile(match_id=conversation_id, notes_json=notes)
+
+    async def record_closed_topic(self, conversation_id: str, entry: dict) -> None:
+        """Remember a topic the other person closed ("hong á", "thôi bỏ qua"...) so later turns
+        do not bring it up again (until CLOSED_TOPIC_TTL of our replies have passed)."""
+        if not entry or not (entry.get("tokens") or entry.get("text")):
+            return
+        async with self._session() as session:
+            profile_repo = MatchProfileRepository(session)
+            existing = await profile_repo.get_by_match_id(conversation_id)
+            notes = (_parse_json(existing.notes_json) if existing and existing.notes_json else None) or {}
+            topics = [e for e in notes.get("closed_topics", []) if isinstance(e, dict)]
+            counter = int(notes.get("reply_counter", 0) or 0)
+            entry = {**entry, "at": counter}
+            if topics and topics[-1].get("text") == entry.get("text") and topics[-1].get("at") == counter:
+                return  # same closure recorded twice in one turn (regenerate/retry)
+            topics.append(entry)
+            notes["closed_topics"] = topics[-MAX_CLOSED_TOPICS:]
             await profile_repo.upsert_profile(match_id=conversation_id, notes_json=notes)
 
     async def _summarize(self, conversation_id, summary, facts, old_msgs) -> tuple[str, list[str]]:

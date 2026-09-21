@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QComboBox
 )
 
-
+from config.settings import get_settings
 class MatchListItemWidget(QWidget):
     """Custom widget for an item in the match list."""
     mode_changed = Signal(str, str)  # tinder_id, new_mode
@@ -37,7 +37,7 @@ class MatchListItemWidget(QWidget):
         # Mode selector combo
         self.combo_mode = QComboBox()
         self.combo_mode.addItems(["AUTO", "SUGGEST", "OFF"])
-        self.combo_mode.setCurrentText(mode.upper() if mode else "AUTO")
+        self.combo_mode.setCurrentText(mode.upper() if mode else "OFF")
         self.combo_mode.setStyleSheet("""
             QComboBox {
                 background: #2D2D2D;
@@ -58,7 +58,7 @@ class MatchListItemWidget(QWidget):
         """Update dropdown selection programmatically."""
         if block_signal:
             self.combo_mode.blockSignals(True)
-        self.combo_mode.setCurrentText(mode.upper() if mode else "AUTO")
+        self.combo_mode.setCurrentText(mode.upper() if mode else "OFF")
         if block_signal:
             self.combo_mode.blockSignals(False)
 
@@ -67,10 +67,9 @@ class MatchListItemWidget(QWidget):
 
 
 class MatchesPanel(QWidget):
-    """Panel holding the list of all active matches with batch mode controls."""
+    """Panel holding matches with independent per-person mode controls."""
     match_selected = Signal(str)  # tinder_id
     match_mode_updated = Signal(str, str)  # tinder_id, new_mode
-    batch_mode_updated = Signal(str)  # new_mode ("OFF", "SUGGEST", "AUTO")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -82,69 +81,10 @@ class MatchesPanel(QWidget):
         header.setStyleSheet("font-weight: bold; font-size: 14px; color: #FFFFFF; padding: 4px 6px;")
         layout.addWidget(header)
 
-        # Batch Mode Toolbar
-        batch_layout = QHBoxLayout()
-        batch_layout.setContentsMargins(6, 0, 6, 4)
-        batch_layout.setSpacing(6)
+        hint = QLabel("Chỉ người được chọn AUTO mới được tự động nhắn")
+        hint.setStyleSheet("color: #888888; font-size: 11px; padding: 0 6px 4px 6px;")
+        layout.addWidget(hint)
 
-        lbl_batch = QLabel("Tất cả:")
-        lbl_batch.setStyleSheet("color: #AAAAAA; font-size: 11px; font-weight: bold;")
-        batch_layout.addWidget(lbl_batch)
-
-        self.btn_batch_off = QPushButton("🔴 Tất cả OFF")
-        self.btn_batch_off.setToolTip("Chuyển toàn bộ match sang OFF (Đi ngủ / Dừng tự động)")
-        self.btn_batch_off.setStyleSheet("""
-            QPushButton {
-                background: #3B1E1E;
-                color: #FF8A80;
-                border: 1px solid #7F2B2B;
-                border-radius: 4px;
-                padding: 3px 8px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background: #542828; color: #FFA8A8; }
-        """)
-        self.btn_batch_off.clicked.connect(lambda: self.set_all_modes("OFF"))
-        batch_layout.addWidget(self.btn_batch_off)
-
-        self.btn_batch_suggest = QPushButton("🟡 SUGGEST")
-        self.btn_batch_suggest.setToolTip("Chuyển toàn bộ match sang SUGGEST (Chỉ gợi ý, đợi bấm duyệt)")
-        self.btn_batch_suggest.setStyleSheet("""
-            QPushButton {
-                background: #3D351A;
-                color: #FFE082;
-                border: 1px solid #826F2E;
-                border-radius: 4px;
-                padding: 3px 8px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background: #574B24; color: #FFF176; }
-        """)
-        self.btn_batch_suggest.clicked.connect(lambda: self.set_all_modes("SUGGEST"))
-        batch_layout.addWidget(self.btn_batch_suggest)
-
-        self.btn_batch_auto = QPushButton("🟢 Tất cả AUTO")
-        self.btn_batch_auto.setToolTip("Chuyển toàn bộ match sang AUTO (Tự động gửi luôn không cần duyệt)")
-        self.btn_batch_auto.setStyleSheet("""
-            QPushButton {
-                background: #1B3828;
-                color: #A5D6A7;
-                border: 1px solid #2E7D46;
-                border-radius: 4px;
-                padding: 3px 8px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background: #264F38; color: #C8E6C9; }
-        """)
-        self.btn_batch_auto.clicked.connect(lambda: self.set_all_modes("AUTO"))
-        batch_layout.addWidget(self.btn_batch_auto)
-
-        batch_layout.addStretch()
-        layout.addLayout(batch_layout)
-        
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet("""
             QListWidget {
@@ -169,7 +109,7 @@ class MatchesPanel(QWidget):
                 tinder_id=item["tinder_id"],
                 name=item["name"],
                 status=item.get("status", "Idle"),
-                mode=item.get("mode", "AUTO")
+                mode=item.get("mode", get_settings().automation.default_match_mode)
             )
 
     def add_or_update_match(self, tinder_id: str, name: str, status: str, mode: str):
@@ -187,13 +127,6 @@ class MatchesPanel(QWidget):
         self.list_widget.addItem(list_item)
         self.list_widget.setItemWidget(list_item, widget)
         self._items_map[tinder_id] = (list_item, widget)
-
-    def set_all_modes(self, new_mode: str):
-        """Batch update mode across all matches and notify controller."""
-        mode_upper = new_mode.upper()
-        for tinder_id, (_, widget) in self._items_map.items():
-            widget.set_mode(mode_upper, block_signal=True)
-        self.batch_mode_updated.emit(mode_upper)
 
     def update_match_mode(self, tinder_id: str, new_mode: str):
         """Update a specific match's mode programmatically."""

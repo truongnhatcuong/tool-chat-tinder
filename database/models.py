@@ -28,7 +28,7 @@ class MatchModel(Base):
     age = Column(Integer, nullable=True)
     bio = Column(Text, nullable=True)
     profile_json = Column(Text, nullable=True)
-    mode = Column(String(32), default="AUTO", nullable=False)  # OFF, SUGGEST, AUTO
+    mode = Column(String(32), default="OFF", nullable=False)  # OFF, SUGGEST, AUTO
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -61,6 +61,7 @@ class MessageModel(Base):
     role = Column(String(32), nullable=False)  # incoming, outgoing, system
     content = Column(Text, nullable=False)
     message_hash = Column(String(64), unique=True, nullable=False, index=True)
+    status = Column(String(32), default="NEW", nullable=False)  # NEW, GENERATING, READY_TO_SEND, SENDING, SENT, FAILED
     created_at = Column(DateTime, default=utc_now, nullable=False)
 
     __table_args__ = (
@@ -91,6 +92,7 @@ class AIReplyModel(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     conversation_id = Column(String(128), nullable=False, index=True)
     input_text = Column(Text, nullable=False)
+    message_hashes = Column(Text, nullable=True)  # JSON list of message hashes that triggered this reply
     output_text = Column(Text, nullable=False)
     status = Column(String(32), default="GENERATED", nullable=False)  # GENERATED, APPROVED, SENT, REJECTED, FAILED
     created_at = Column(DateTime, default=utc_now, nullable=False)

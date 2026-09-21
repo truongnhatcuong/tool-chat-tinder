@@ -1,26 +1,26 @@
 {
   "browser": {
     "headless": false,
-    "profile_dir": "./data/profiles/acc_1789901748",
+    "profile_dir": "./data/tinder_browser",
     "tinder_url": "https://tinder.com/",
     "latitude": 16.0544,
     "longitude": 108.2022
   },
   "scanner": {
-    "match_scan_interval": 10.0,
-    "message_scan_interval": 2.0
+    "match_scan_interval": 8.0,
+    "message_scan_interval": 10.0
   },
   "automation": {
-    "message_debounce_seconds": 5.0,
-    "reply_delay_min": 3.0,
-    "reply_delay_max": 10.0,
-    "max_parallel_conversations": 5,
-    "max_ai_replies_per_minute": 6,
+    "message_debounce_seconds": 20.0,
+    "reply_delay_min": 6.0,
+    "reply_delay_max": 9.0,
+    "max_parallel_conversations": 1,
+    "max_ai_replies_per_minute": 3,
     "default_match_mode": "AUTO"
   },
   "ai": {
-    "temperature": 0.8,
-    "max_tokens": 999,
+    "temperature": 0.75,
+    "max_tokens": 500,
     "max_history_messages": 20,
     "max_retries": 3,
     "summary_trigger_count": 30

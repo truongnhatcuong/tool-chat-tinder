@@ -11,7 +11,7 @@ class ConversationWorker:
     def __init__(
         self,
         state: ConversationState,
-        handler: Callable[[ConversationState, list[str]], Coroutine[Any, Any, None]]
+        handler: Callable[[ConversationState, list[dict[str, str]]], Coroutine[Any, Any, None]]
     ):
         self.state = state
         self.handler = handler
@@ -32,7 +32,8 @@ class ConversationWorker:
                 if bundled_messages is None:  # Sentinel to stop
                     break
 
-                # Process under this conversation's dedicated lock
+                # Process under this conversation's dedicated lock. Runtime
+                # bundles contain hashes; lightweight callers may use strings.
                 async with self.state.lock:
                     await self.handler(self.state, bundled_messages)
 

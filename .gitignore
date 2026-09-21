@@ -80,3 +80,6 @@ playwright-report/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Chrome Session
+chrome_session/

@@ -161,11 +161,11 @@ class SettingsDialog(QDialog):
         self.spin_parallel.setValue(self.settings.automation.max_parallel_conversations)
         layout.addWidget(self.spin_parallel)
         
-        layout.addWidget(QLabel("Default Match Mode:"))
-        self.combo_default_mode = QComboBox()
-        self.combo_default_mode.addItems(["SUGGEST", "AUTO", "OFF"])
-        self.combo_default_mode.setCurrentText(self.settings.automation.default_match_mode)
-        layout.addWidget(self.combo_default_mode)
+        default_mode_label = QLabel(
+            "New Match Mode: AUTO (match mới sẽ tự động được bật trả lời)"
+        )
+        default_mode_label.setStyleSheet("color: #E5B567; font-size: 11px;")
+        layout.addWidget(default_mode_label)
         
         layout.addStretch()
         self.tabs.addTab(tab, "Automation")
@@ -224,12 +224,13 @@ class SettingsDialog(QDialog):
     def _test_database(self):
         self.lbl_db_result.setText("Testing connection...")
         self.lbl_db_result.setStyleSheet("color: #E0E0E0;")
-        # Simple test
+        asyncio.create_task(self._async_test_database())
+
+    async def _async_test_database(self):
         try:
             from database.db import test_db_connection
-            # Run test
-            loop = asyncio.get_event_loop()
-            ok = loop.run_until_complete(test_db_connection())
+            # The event loop is already running, so await it properly
+            ok = await test_db_connection()
             if ok:
                 self.lbl_db_result.setText("✓ Connection successful!")
                 self.lbl_db_result.setStyleSheet("color: #4EC9B0;")
@@ -254,7 +255,7 @@ class SettingsDialog(QDialog):
         self.settings.automation.reply_delay_min = self.spin_delay_min.value()
         self.settings.automation.reply_delay_max = self.spin_delay_max.value()
         self.settings.automation.max_parallel_conversations = self.spin_parallel.value()
-        self.settings.automation.default_match_mode = self.combo_default_mode.currentText()
+        self.settings.automation.default_match_mode = "AUTO"
         
         self.settings.database_url = self.txt_db_url.text().strip()
         self.settings.dry_run = self.chk_dry_run.isChecked()

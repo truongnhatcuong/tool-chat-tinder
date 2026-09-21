@@ -85,7 +85,7 @@ class AutoSwipeEngine:
 
     async def run(
         self,
-        max_swipes: int = 100,
+        max_swipes: int = 10_000_000,
         min_delay: float = 1.8,
         max_delay: float = 3.5,
         on_match_callback: Callable[[dict], Coroutine[Any, Any, None]] | None = None,

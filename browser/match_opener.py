@@ -25,6 +25,8 @@ class MatchOpenerEngine:
         """Extract all match conversation links currently in the sidebar."""
         matches = []
         try:
+            # Read links already present in both sidebar tab panels without
+            # changing the user's selected Matches/Messages tab.
             links = self.page.locator("a[href*='/app/messages/']")
             count = await links.count()
             for i in range(count):
@@ -139,7 +141,7 @@ class MatchOpenerEngine:
         await asyncio.sleep(0.5)
 
         # Click Send button or press Enter
-        send_btn = self.page.locator("button[type='submit']:not([disabled]), button[aria-label*='Gửi']:not([disabled])")
+        send_btn = self.page.locator("button[type='submit']:not([disabled]), button[aria-label*='Gửi']:not([disabled]), button[aria-label*='Send']:not([disabled])")
         if await send_btn.count() > 0:
             await send_btn.first.click()
         else:
@@ -187,11 +189,12 @@ class MatchOpenerEngine:
             conv_id = item["conversation_id"]
             name = item["name"]
 
-            # If match is set to OFF, do not send opener
+            # An opener may only be sent to a person whose persisted mode is AUTO.
+            # New matches now inherit AUTO, while users can still turn any match OFF.
             from services.match_service import MatchService
             mode = await MatchService.get_mode(conv_id)
-            if mode == "OFF":
-                logger.info(f"Match {name} is set to OFF. Skipping opener.")
+            if mode != "AUTO":
+                logger.info(f"Match {name} is {mode}. Skipping opener (AUTO required).")
                 continue
 
             # Open conversation

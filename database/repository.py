@@ -12,6 +12,7 @@ from database.models import (
     AIReplyModel
 )
 from utils.logger import logger
+from config.settings import get_settings
 
 
 class MatchRepository:
@@ -55,7 +56,7 @@ class MatchRepository:
                 age=age,
                 bio=bio,
                 profile_json=profile_json,
-                mode=mode or "AUTO",
+                mode=mode or get_settings().automation.default_match_mode,
                 created_at=now,
                 updated_at=now
             )
@@ -180,6 +181,7 @@ class MessageRepository:
         role: str,
         content: str,
         message_hash: str,
+        status: str = "NEW",
         created_at: datetime | None = None
     ) -> MessageModel | None:
         # Check duplicate
@@ -194,6 +196,7 @@ class MessageRepository:
             role=role,
             content=content,
             message_hash=message_hash,
+            status=status,
             created_at=created_at or datetime.now(timezone.utc)
         )
         self.session.add(msg)
@@ -233,6 +236,39 @@ class MessageRepository:
         result = await self.session.execute(stmt)
         await self.session.flush()
         return (result.rowcount or 0) > 0
+
+    async def update_messages_status(self, message_hashes: list[str], new_status: str) -> None:
+        if not message_hashes:
+            return
+        stmt = (
+            update(MessageModel)
+            .where(MessageModel.message_hash.in_(message_hashes))
+            .values(status=new_status)
+        )
+        await self.session.execute(stmt)
+        await self.session.flush()
+
+    async def get_messages_by_status(self, conversation_id: str, status: str) -> list[MessageModel]:
+        stmt = (
+            select(MessageModel)
+            .where(
+                MessageModel.conversation_id == conversation_id,
+                MessageModel.status == status
+            )
+            .order_by(MessageModel.created_at.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_statuses_by_hashes(self, message_hashes: list[str]) -> dict[str, str]:
+        """Return persisted processing status keyed by message hash."""
+        if not message_hashes:
+            return {}
+        stmt = select(MessageModel.message_hash, MessageModel.status).where(
+            MessageModel.message_hash.in_(message_hashes)
+        )
+        result = await self.session.execute(stmt)
+        return {message_hash: status for message_hash, status in result.all()}
 
 
 class MatchProfileRepository:
@@ -290,11 +326,13 @@ class AIReplyRepository:
         conversation_id: str,
         input_text: str,
         output_text: str,
-        status: str = "GENERATED"
+        status: str = "GENERATED",
+        message_hashes: str | None = None
     ) -> AIReplyModel:
         reply = AIReplyModel(
             conversation_id=conversation_id,
             input_text=input_text,
+            message_hashes=message_hashes,
             output_text=output_text,
             status=status,
             created_at=datetime.now(timezone.utc)

@@ -23,6 +23,7 @@ from services.message_service import MessageService
 from services.reply_service import ReplyService
 from services.account_service import AccountService
 from utils.logger import logger
+from utils.sleep_preventer import sleep_preventer
 
 
 class TinderAppController:
@@ -42,9 +43,23 @@ class TinderAppController:
         
         self.sender: MessageSender | None = None
         self.scanner: MatchScanner | None = None
+        # Tinder automation uses one shared tab. Every navigation/detection/send
+        # operation must be serialized or one conversation can steal another's
+        # textbox between verification and Enter.
+        self._browser_operation_lock = asyncio.Lock()
         self._scanner_task: asyncio.Task | None = None
         self._opener_task: asyncio.Task | None = None
         self._msg_monitor_task: asyncio.Task | None = None
+        self._history_backfilled: set[str] = set()
+        self._unread_conversations: set[str] = set()
+        self._queued_message_hashes: set[str] = set()
+        self._auto_scan_index = 0
+        self._opener_sent_or_checked: set[str] = set()
+        # Once a waiting conversation is detected, keep Tinder on that person
+        # through debounce, AI generation, and every outgoing message. Only the
+        # completing worker may release this reservation.
+        self._active_conversation_turn: str | None = None
+        self._active_conversation_name: str = ""
         self._is_running = True
 
     async def initialize(self):
@@ -75,9 +90,6 @@ class TinderAppController:
         )
         self.window.matches_panel.match_mode_updated.connect(
             lambda tid, mode: asyncio.create_task(self.handle_mode_update(tid, mode))
-        )
-        self.window.matches_panel.batch_mode_updated.connect(
-            lambda mode: asyncio.create_task(self.handle_batch_mode_update(mode))
         )
         self.window.matches_panel.match_selected.connect(
             lambda tid: asyncio.create_task(self.handle_match_selected(tid))
@@ -111,8 +123,12 @@ class TinderAppController:
             active_acc = AccountService.get_active_account()
             self.browser_mgr.settings.browser.profile_dir = active_acc.get("profile_dir", "./data/tinder_browser")
             page = await self.browser_mgr.start()
-            self.sender = MessageSender(page)
-            self.scanner = MatchScanner(page)
+            self.sender = MessageSender(page, operation_lock=self._browser_operation_lock)
+            self.scanner = MatchScanner(
+                page,
+                operation_lock=self._browser_operation_lock,
+                can_switch_tabs=lambda: self._active_conversation_turn is None,
+            )
 
             # Check login
             is_logged_in = await self.browser_mgr.check_login_status()
@@ -146,6 +162,9 @@ class TinderAppController:
             if not healthy:
                 logger.warning("Selector health check notice: some selectors were not found immediately. Continuing with settings.")
 
+            # Recover any messages stuck in NEW/GENERATING/SENDING/READY_TO_SEND due to a previous crash
+            await self.recover_pending_messages()
+
             # Start match scanner loop
             if self.scanner:
                 self._scanner_task = asyncio.create_task(
@@ -158,9 +177,32 @@ class TinderAppController:
             # Start message monitor loop for incoming chat messages
             self._msg_monitor_task = asyncio.create_task(self._message_monitor_background_loop())
 
-            # Automatically run auto-opener in background for new matches
-            if self.settings.global_auto_reply:
-                self._opener_task = asyncio.create_task(self._auto_opener_background_loop())
+            # AUTO chats are inspected by the scanner/monitor pipeline. Empty
+            # chats receive their opener there, avoiding a second navigation
+            # loop racing against incoming-message detection.
+
+    def _reserve_conversation_turn(self, conversation_id: str, match_name: str) -> bool:
+        """Reserve the shared Tinder tab for one complete conversation turn."""
+        if self._active_conversation_turn not in (None, conversation_id):
+            return False
+        if self._active_conversation_turn is None:
+            logger.info(
+                f"🔒 Giữ hội thoại {match_name} ({conversation_id[:8]}...) "
+                "cho đến khi trả lời xong."
+            )
+        self._active_conversation_turn = conversation_id
+        self._active_conversation_name = match_name
+        return True
+
+    def _release_conversation_turn(self, conversation_id: str) -> None:
+        """Release a reservation only from the worker that owns it."""
+        if self._active_conversation_turn == conversation_id:
+            logger.info(
+                f"🔓 Đã xử lý xong {self._active_conversation_name or conversation_id}; "
+                "có thể chuyển sang người tiếp theo."
+            )
+            self._active_conversation_turn = None
+            self._active_conversation_name = ""
 
     async def on_matches_scanned(self, matches: list[dict]):
         """Handler when match scanner finds matches."""
@@ -173,59 +215,126 @@ class TinderAppController:
                 mode=m["mode"]
             )
 
-        # Automatically open and process unread messages for AUTO matches
-        for m in matches:
-            tinder_id = m.get("tinder_id")
-            if (
-                m.get("has_unread") and self.settings.global_auto_reply and not self.settings.is_paused
-                and not getattr(self, "_swiping", False)
-            ):
-                mode = await MatchService.get_mode(tinder_id)
-                if mode == "AUTO" and self.browser_mgr.page and not self.browser_mgr.page.is_closed():
-                    current_url = self.browser_mgr.page.url or ""
-                    if tinder_id not in current_url:
-                        logger.info(f"🔔 Phát hiện tin nhắn mới chưa đọc từ {m.get('name')} ({tinder_id[:8]}...). Đang mở chat...")
+        # A detected waiting conversation owns the tab until its entire reply is
+        # complete. Do not round-robin to another person during debounce or AI.
+        reserved_id = self._active_conversation_turn
+        if reserved_id and self.browser_mgr.page and not self.browser_mgr.page.is_closed():
+            async with self._browser_operation_lock:
+                if self.tinder_browser.get_current_conversation_id() != reserved_id:
+                    logger.info(
+                        f"↩️ Quay lại hội thoại đang xử lý "
+                        f"{self._active_conversation_name or reserved_id}."
+                    )
+                    await self.browser_mgr.page.goto(
+                        f"https://tinder.com/app/messages/{reserved_id}",
+                        wait_until="networkidle",
+                        timeout=15000,
+                    )
+            return
+
+        # Inspect every explicitly AUTO conversation in round-robin order, even
+        # when Tinder fails to render a red/unread badge. Message order inside
+        # the chat determines whether they are waiting for our reply.
+        if (
+            self.settings.global_auto_reply
+            and not self.settings.is_paused
+            and not self.settings.emergency_stop
+            and not getattr(self, "_swiping", False)
+            and self.browser_mgr.page
+            and not self.browser_mgr.page.is_closed()
+        ):
+            auto_matches = []
+            for match in matches:
+                tinder_id = match.get("tinder_id")
+                if tinder_id and await MatchService.get_mode(tinder_id) == "AUTO":
+                    auto_matches.append(match)
+                    if match.get("has_unread"):
+                        self._unread_conversations.add(tinder_id)
+
+            if auto_matches:
+                unread = [
+                    match for match in auto_matches
+                    if match.get("tinder_id") in self._unread_conversations
+                ]
+                if unread:
+                    target = unread[0]
+                else:
+                    target = auto_matches[self._auto_scan_index % len(auto_matches)]
+                    self._auto_scan_index += 1
+
+                tinder_id = target["tinder_id"]
+                async with self._browser_operation_lock:
+                    # Reservation may have been created while this scanner was
+                    # waiting for the browser lock. Re-check before navigation.
+                    if self._active_conversation_turn:
+                        return
+                    current_id = self.tinder_browser.get_current_conversation_id()
+                    if current_id != tinder_id:
+                        logger.info(
+                            f"🔎 Kiểm tra hội thoại AUTO của {target.get('name')} "
+                            f"({tinder_id[:8]}...), không phụ thuộc dấu chưa đọc."
+                        )
                         try:
-                            await self.browser_mgr.page.goto(f"https://tinder.com/app/messages/{tinder_id}", wait_until="networkidle", timeout=15000)
-                            break
+                            await self.browser_mgr.page.goto(
+                                f"https://tinder.com/app/messages/{tinder_id}",
+                                wait_until="networkidle",
+                                timeout=15000,
+                            )
                         except Exception as e:
-                            logger.warning(f"Error opening unread chat {tinder_id}: {e}")
+                            logger.warning(f"Error opening AUTO chat {tinder_id}: {e}")
 
-        # Automatic cleanup: if someone was unmatched on Tinder, clean them from DB and UI
-        active_ids = {m["tinder_id"] for m in matches}
-        if len(active_ids) > 0:
-            removed_ids = await MatchService.cleanup_unmatched(active_ids)
-            for rid in removed_ids:
-                self.window.matches_panel.remove_match(rid)
+        # Never infer "unmatched" from a sidebar scan. Tinder only renders a
+        # partial/virtualized tab at a time, so absence from this scan is not
+        # proof that a match was removed. Automatic cleanup previously deleted
+        # valid conversations and raced with active DB sessions.
 
-    async def on_bundled_messages_ready(self, state: ConversationState, bundled_messages: list[str]):
+    async def on_bundled_messages_ready(self, state: ConversationState, bundled_messages: list[dict[str, str]]):
+        """Process one reserved person's complete turn, then allow navigation."""
+        self._reserve_conversation_turn(state.conversation_id, state.match_name)
+        try:
+            await self._process_bundled_messages_ready(state, bundled_messages)
+        finally:
+            self._release_conversation_turn(state.conversation_id)
+
+    async def _process_bundled_messages_ready(self, state: ConversationState, bundled_messages: list[dict[str, str]]):
         """Triggered after debounce expires when messages are ready for AI processing."""
         logger.info(f"Processing AI reply for {state.match_name} ({len(bundled_messages)} messages)")
+        
+        message_texts = [m["content"] for m in bundled_messages]
+        message_hashes = [m["hash"] for m in bundled_messages]
 
         # Per-user memory: full history of THIS conversation + saved summary/facts -> final context
         memory_ctx = None
         try:
-            memory_ctx = await self.memory.build_context(state.conversation_id, bundled_messages)
+            memory_ctx = await self.memory.build_context(state.conversation_id, message_texts)
         except Exception as e:
             logger.warning(f"Memory context failed, falling back to in-memory history: {e}")
 
-        reply_text, is_safe_for_auto, intent = await self.ai_generator.generate_response(
-            state, bundled_messages, memory=memory_ctx
+        out_messages, is_safe_for_auto, intent, meta = await self.ai_generator.generate_response(
+            state, message_texts, memory=memory_ctx
         )
-        if not reply_text.strip():
+        if not out_messages:
+            # If AI says WAIT or no messages generated
+            await MessageService.update_messages_status(message_hashes, "IGNORED")
             return
 
+        gui_reply_text = "\n".join(out_messages)
+
         # Save AI reply to DB
+        import json
+        hashes_json = json.dumps(message_hashes)
         reply_id = await ReplyService.record_reply(
             conversation_id=state.conversation_id,
-            input_text=" \n ".join(bundled_messages),
-            output_text=reply_text,
-            status="GENERATED"
+            input_text=" \n ".join(message_texts),
+            output_text=gui_reply_text,
+            status="READY_TO_SEND",
+            message_hashes=hashes_json
         )
+        await MessageService.update_messages_status(message_hashes, "READY_TO_SEND")
 
         # Update GUI if this is the currently viewed conversation
         if self.window.reply_panel.current_conversation_id == state.conversation_id:
-            self.window.reply_panel.set_suggestion(state.conversation_id, reply_text)
+            self.window.reply_panel.set_suggestion(state.conversation_id, gui_reply_text)
 
         # AUTO mode execution criteria
         can_auto_send = (
@@ -234,20 +343,52 @@ class TinderAppController:
             and self.settings.global_auto_reply
             and not self.settings.is_paused
             and not self.settings.emergency_stop
-            and is_safe_for_auto
         )
 
         if can_auto_send and self.sender:
-            logger.info(f"Auto-dispatching reply to {state.match_name}...")
-            sent = await self.sender.send_reply(state.conversation_id, reply_text, is_auto=True)
-            if sent:
+            import random
+            import asyncio
+            logger.info(f"Auto-dispatching {len(out_messages)} replies to {state.match_name}...")
+            
+            # Transition to SENDING
+            await ReplyService.update_status_raw(reply_id, "SENDING")
+            await MessageService.update_messages_status(message_hashes, "SENDING")
+            
+            all_sent = True
+            for i, msg in enumerate(out_messages):
+                sent = await self.sender.send_reply(state.conversation_id, msg, is_auto=True)
+                if sent:
+                    await self._remember_sent(state.conversation_id, msg)
+                else:
+                    all_sent = False
+                
+                # Delay between multiple messages
+                if i < len(out_messages) - 1:
+                    await asyncio.sleep(random.uniform(2.5, 4.5))
+
+            if all_sent:
                 await ReplyService.mark_sent(reply_id)
-                await self._remember_sent(state.conversation_id, reply_text)
+                await MessageService.update_messages_status(message_hashes, "SENT")
+                self.window.reply_panel.clear_suggestion()
+            else:
+                await ReplyService.update_status_raw(reply_id, "FAILED")
+                await MessageService.update_messages_status(message_hashes, "FAILED")
         else:
             logger.info(f"Reply presented as suggestion in GUI for {state.match_name} (Mode={state.mode})")
 
+        # Update advanced memory
+        is_opener = len(state.history) == 0
+        await self.memory.update_advanced_memory(
+            state.conversation_id,
+            meta.get("intent", ""),
+            meta.get("topic", ""),
+            meta.get("pattern_used", ""),
+            is_opener=is_opener,
+            sent_messages=out_messages
+        )
+
         # Check if conversation wrap-up / goodnight / busy / text later -> auto transition to OFF
-        combined_text = " ".join(bundled_messages)
+        combined_text = " ".join(message_texts)
         is_closing, closing_type = IntentClassifier.is_conversation_closing(combined_text)
         if intent in (IntentCategory.GOODNIGHT.value, IntentCategory.BUSY_LATER.value) or is_closing:
             actual_type = closing_type or ("GOODNIGHT" if intent == IntentCategory.GOODNIGHT.value else "BUSY_LATER")
@@ -297,6 +438,19 @@ class TinderAppController:
             logger.info(f"Sending manually approved reply to {conversation_id}...")
             await self.sender.send_reply(conversation_id, text, is_auto=False)
             await self._remember_sent(conversation_id, text)
+            
+            # Mark the latest reply as SENT so it doesn't get resent on mode switch
+            recent_reply = await ReplyService.get_latest_reply(conversation_id)
+            if recent_reply and recent_reply.status == "READY_TO_SEND":
+                await ReplyService.mark_sent(recent_reply.id)
+                import json
+                if recent_reply.message_hashes:
+                    try:
+                        hashes = json.loads(recent_reply.message_hashes)
+                        await MessageService.update_messages_status(hashes, "SENT")
+                    except Exception:
+                        pass
+                        
             self.window.reply_panel.clear()
 
             # If user sent a goodnight / busy / closing message, also transition to OFF
@@ -317,35 +471,132 @@ class TinderAppController:
         state = self.conv_manager.get_state(conversation_id)
         if state and state.history:
             last_msg = state.history[-1]["content"] if state.history else "hi"
-            reply_text, _, _ = await self.ai_generator.generate_response(state, [last_msg])
-            self.window.reply_panel.set_suggestion(conversation_id, reply_text, "Regenerated")
+            if last_msg:
+                self.window.reply_panel.set_suggestion(conversation_id, "Đang suy nghĩ lại...")
+                out_messages, _, _, _ = await self.ai_generator.generate_response(state, [last_msg])
+                if out_messages:
+                    gui_reply_text = "\n".join(out_messages)
+                    self.window.reply_panel.set_suggestion(conversation_id, gui_reply_text)
+                else:
+                    self.window.reply_panel.set_suggestion(conversation_id, "Không tạo được phản hồi")
 
     async def handle_mode_update(self, tinder_id: str, mode: str):
         await MatchService.set_mode(tinder_id, mode)
         self.conv_manager.set_mode(tinder_id, mode)
+        
+        if mode == "AUTO":
+            asyncio.create_task(self._auto_dispatch_pending_on_mode_change(tinder_id))
 
-    async def handle_batch_mode_update(self, mode: str):
-        """Batch update mode across all matches in database and runtime memory."""
-        logger.info(f"Applying batch mode '{mode}' to all matches...")
-        await MatchService.set_all_modes(mode)
-        self.conv_manager.set_all_modes(mode)
-        count = len(self.window.matches_panel._items_map)
-        msg = f"⚡ Đã chuyển toàn bộ {count} cuộc trò chuyện sang chế độ {mode}."
-        self.window.status_bar.showMessage(msg, 6000)
-        logger.info(msg)
+    async def recover_pending_messages(self):
+        """Discard stale work after a crash; only dispatch an already-generated reply for an explicit AUTO match."""
+        from database.db import get_db_session
+        from sqlalchemy import select
+        from database.models import MessageModel, ConversationModel
+
+        async with get_db_session() as session:
+            # Never regenerate from old NEW/GENERATING/SENDING rows at startup.
+            # Existing databases may contain historical messages marked NEW, and
+            # replaying them causes the bot to answer an entire old transcript.
+            stmt = select(MessageModel).where(
+                MessageModel.status.in_(["NEW", "GENERATING", "SENDING"])
+            )
+            result = await session.execute(stmt)
+            stale_hashes = [m.message_hash for m in result.scalars().all()]
+            if stale_hashes:
+                await MessageService.update_messages_status(stale_hashes, "IGNORED")
+                logger.info(
+                    f"Ignored {len(stale_hashes)} stale pending message(s) during safe startup recovery."
+                )
+
+            # Dispatch READY_TO_SEND messages only for the individual match that
+            # is explicitly AUTO. OFF/SUGGEST modes are never changed here.
+            stmt = select(ConversationModel)
+            result = await session.execute(stmt)
+            for conv in result.scalars().all():
+                from services.match_service import MatchService
+                mode = await MatchService.get_mode(conv.match_id)
+                if mode == "AUTO":
+                    await self._auto_dispatch_pending_on_mode_change(conv.match_id)
+
+    async def _auto_dispatch_pending_on_mode_change(self, tinder_id: str):
+        recent_reply = await ReplyService.get_latest_reply(tinder_id)
+        if recent_reply and recent_reply.status == "READY_TO_SEND":
+            if self.sender and self.settings.global_auto_reply and not self.settings.dry_run and not self.settings.is_paused:
+                logger.info(f"Auto-dispatching pending generated reply for {tinder_id} after mode switch to AUTO.")
+                out_messages = recent_reply.output_text.split('\n')
+                all_sent = True
+                
+                # If currently viewing this conversation, update GUI
+                if self.window.reply_panel.current_conversation_id == tinder_id:
+                    self.window.reply_panel.lbl_status.setText("Sending pending...")
+                    
+                for i, msg in enumerate(out_messages):
+                    msg = msg.strip()
+                    if not msg:
+                        continue
+                    sent = await self.sender.send_reply(tinder_id, msg, is_auto=True)
+                    if sent:
+                        await self._remember_sent(tinder_id, msg)
+                    else:
+                        all_sent = False
+                        
+                    if i < len(out_messages) - 1:
+                        import random
+                        await asyncio.sleep(random.uniform(2.5, 4.5))
+                
+                import json
+                message_hashes = []
+                if recent_reply.message_hashes:
+                    try:
+                        message_hashes = json.loads(recent_reply.message_hashes)
+                    except Exception:
+                        pass
+
+                if all_sent:
+                    await ReplyService.mark_sent(recent_reply.id)
+                    await MessageService.update_messages_status(message_hashes, "SENT")
+                    if self.window.reply_panel.current_conversation_id == tinder_id:
+                        self.window.reply_panel.clear_suggestion()
+                else:
+                    await ReplyService.update_status_raw(recent_reply.id, "FAILED")
+                    await MessageService.update_messages_status(message_hashes, "FAILED")
 
     async def handle_match_selected(self, tinder_id: str):
         state = self.conv_manager.get_state(tinder_id)
         if state:
-            self.window.conversation_panel.display_profile(
-                name=state.match_name,
-                age=state.profile.get("age"),
-                bio=state.profile.get("bio"),
-                interests=state.profile.get("interests")
-            )
-            recent_msgs = await MessageService.get_recent_messages(tinder_id)
-            self.window.conversation_panel.display_messages(recent_msgs)
-            self.window.reply_panel.current_conversation_id = tinder_id
+            name = state.match_name
+            age = state.profile.get("age")
+            bio = state.profile.get("bio")
+            interests = state.profile.get("interests")
+        else:
+            match_db = await MatchService.get_match(tinder_id)
+            if match_db:
+                name = match_db.name
+                age = getattr(match_db, "age", None)
+                bio = getattr(match_db, "bio", "")
+                interests = []
+                import json
+                if match_db.profile_json:
+                    try:
+                        p = json.loads(match_db.profile_json)
+                        interests = p.get("interests", [])
+                    except Exception:
+                        pass
+            else:
+                name = "Unknown"
+                age = None
+                bio = ""
+                interests = []
+
+        self.window.conversation_panel.display_profile(
+            name=name,
+            age=age,
+            bio=bio,
+            interests=interests
+        )
+        recent_msgs = await MessageService.get_recent_messages(tinder_id)
+        self.window.conversation_panel.display_messages(recent_msgs)
+        self.window.reply_panel.current_conversation_id = tinder_id
 
     def stop_auto_swipe(self):
         engine = getattr(self, "_swipe_engine", None)
@@ -362,6 +613,13 @@ class TinderAppController:
             self.stop_auto_swipe()
             self.window.status_bar.showMessage("Đã dừng Auto-Like.", 6000)
             return
+        if self._active_conversation_turn:
+            self.window.status_bar.showMessage(
+                f"Đang trả lời {self._active_conversation_name}; "
+                "Auto-Like sẽ không chuyển trang lúc này.",
+                8000,
+            )
+            return
         from browser.auto_swipe import AutoSwipeEngine
         engine = AutoSwipeEngine(self.browser_mgr.page)
         self._swipe_engine = engine
@@ -369,10 +627,20 @@ class TinderAppController:
         self.window.status_bar.showMessage("Đang tự động like thẻ (bấm lại để dừng)...")
         self._swiping = True
         try:
-            results = await engine.run(
-                max_swipes=150,
-                should_stop=lambda: self.settings.is_paused or self.settings.emergency_stop,
-            )
+            async with self._browser_operation_lock:
+                if self._active_conversation_turn:
+                    self.window.status_bar.showMessage(
+                        f"Đang trả lời {self._active_conversation_name}; "
+                        "đã hủy Auto-Like để giữ nguyên hội thoại.",
+                        8000,
+                    )
+                    return
+                results = await engine.run(
+                    # No artificial cap: the loop already terminates on its own via
+                    # is_out_of_likes() (Tinder's real "out of likes" modal) or should_stop().
+                    max_swipes=10_000_000,
+                    should_stop=lambda: self.settings.is_paused or self.settings.emergency_stop,
+                )
         finally:
             self._swiping = False
             self._swipe_engine = None
@@ -386,6 +654,13 @@ class TinderAppController:
         if not self.browser_mgr.page or self.browser_mgr.page.is_closed():
             logger.warning("Browser is not active for auto-opener.")
             return
+        if self._active_conversation_turn:
+            self.window.status_bar.showMessage(
+                f"Đang trả lời {self._active_conversation_name}; "
+                "hãy chờ gửi xong trước khi mở lời người khác.",
+                8000,
+            )
+            return
         if getattr(self, "_swiping", False):
             # Switch mode: stop auto-like, wait for it to finish, then run openers
             logger.info("Dừng Auto-Like để chuyển sang thả thính...")
@@ -398,7 +673,15 @@ class TinderAppController:
         from services.opener_service import OpenerService
         engine = MatchOpenerEngine(self.browser_mgr.page, OpenerService(self.llm_client))
         self.window.status_bar.showMessage("Đang tự động mở lời (thả thính nhẹ) cho các match mới...")
-        sent = await engine.run_openers_on_all_new_matches(max_openers=10)
+        async with self._browser_operation_lock:
+            if self._active_conversation_turn:
+                self.window.status_bar.showMessage(
+                    f"Đang trả lời {self._active_conversation_name}; "
+                    "đã hoãn mở lời người khác.",
+                    8000,
+                )
+                return
+            sent = await engine.run_openers_on_all_new_matches(max_openers=10)
         self.window.status_bar.showMessage(f"Hoàn tất mở lời: Đã gửi {sent} câu mở lời.")
 
     async def _auto_opener_background_loop(self):
@@ -414,12 +697,17 @@ class TinderAppController:
                     and not self.settings.is_paused
                     and not self.settings.emergency_stop
                     and not getattr(self, "_swiping", False)
+                    and self._active_conversation_turn is None
                 ):
                     from browser.match_opener import MatchOpenerEngine
                     from services.opener_service import OpenerService
                     engine = MatchOpenerEngine(self.browser_mgr.page, OpenerService(self.llm_client))
                     self.window.status_bar.showMessage("💌 Đang tự động mở lời (thả thính) cho các match mới...")
-                    sent = await engine.run_openers_on_all_new_matches(max_openers=10)
+                    async with self._browser_operation_lock:
+                        if self._active_conversation_turn:
+                            sent = 0
+                        else:
+                            sent = await engine.run_openers_on_all_new_matches(max_openers=10)
                     if sent > 0:
                         self.window.status_bar.showMessage(f"💌 Hoàn tất mở lời: Đã tự động gửi {sent} câu mở lời!", 8000)
             except asyncio.CancelledError:
@@ -442,26 +730,73 @@ class TinderAppController:
                     and not self.settings.is_paused
                     and not self.settings.emergency_stop
                 ):
-                    import re
-                    current_url = self.browser_mgr.page.url or ""
-                    m = re.search(r"/app/messages/([a-zA-Z0-9_\-]+)", current_url)
-                    if m:
-                        conv_id = m.group(1)
+                    async with self._browser_operation_lock:
+                        conv_id = self.tinder_browser.get_current_conversation_id()
+                        reserved_id = self._active_conversation_turn
+                        if reserved_id and conv_id != reserved_id:
+                            logger.info(
+                                f"↩️ Giữ nguyên lượt của "
+                                f"{self._active_conversation_name or reserved_id}; "
+                                "chưa chuyển sang người khác."
+                            )
+                            await self.browser_mgr.page.goto(
+                                f"https://tinder.com/app/messages/{reserved_id}",
+                                wait_until="networkidle",
+                                timeout=15000,
+                            )
+                            conv_id = reserved_id
+
+                        if not conv_id:
+                            await asyncio.sleep(self.settings.scanner.message_scan_interval or 3.0)
+                            continue
+
                         detector = MessageDetector(self.browser_mgr.page)
                         mode = await MatchService.get_mode(conv_id)
+                        match_db = await MatchService.get_match(conv_id)
+                        resolved_name = match_db.name if match_db else "Match"
                         state = await self.conv_manager.get_or_create_state(
-                            conv_id, conv_id, "Match", mode=mode
+                            conv_id, conv_id, resolved_name, mode=mode
                         )
-                        match_name = state.match_name if state.match_name != "Match" else "Match"
+                        match_name = state.match_name
+
+                        first_visit = conv_id not in self._history_backfilled
+                        if first_visit:
+                            await detector.scroll_to_top_of_history()
 
                         msgs = await detector.detect_messages_in_current_chat(
                             conv_id, conv_id, match_name
                         )
+
+                        # A genuinely empty AUTO chat is a new match: send exactly
+                        # one opener. This does not depend on a red/unread badge.
+                        if not msgs and mode == "AUTO" and conv_id not in self._opener_sent_or_checked:
+                            from browser.match_opener import MatchOpenerEngine
+                            from services.opener_service import OpenerService
+
+                            opener_engine = MatchOpenerEngine(
+                                self.browser_mgr.page,
+                                OpenerService(self.llm_client),
+                            )
+                            if not await opener_engine.has_existing_messages():
+                                profile = await opener_engine.read_current_chat_profile(
+                                    default_name=match_name
+                                )
+                                opener = await opener_engine.opener_service.generate_opener(profile)
+                                if await opener_engine.send_opener_to_current_chat(conv_id, opener):
+                                    await self._remember_sent(conv_id, opener)
+                                    logger.info(
+                                        f"💌 Đã mở lời cho match AUTO mới {match_name}: \"{opener}\""
+                                    )
+                            self._opener_sent_or_checked.add(conv_id)
+                            self._history_backfilled.add(conv_id)
+                            continue
+
                         sent_texts = set(getattr(self, "_sent_texts", {}).get(conv_id, set()))
-                        # Also include our outgoing messages stored in DB (e.g. openers)
                         for dm in await MessageService.get_recent_messages(conv_id, limit=30):
                             if dm["role"] == "outgoing":
                                 sent_texts.add(self._norm_text(dm["content"]))
+
+                        any_saved = False
                         for msg in msgs:
                             if msg["role"] == "incoming" and self._norm_text(msg["content"]) in sent_texts:
                                 continue
@@ -471,27 +806,74 @@ class TinderAppController:
                                 sender=msg["sender"],
                                 role=msg["role"],
                                 content=msg["content"],
-                                message_hash=msg["message_hash"]
+                                message_hash=msg["message_hash"],
+                                status="IGNORED" if first_visit or mode == "OFF" else "NEW",
                             )
-                            if saved and msg["role"] == "incoming":
-                                logger.info(
-                                    f"💬 Phát hiện tin nhắn mới từ {msg['sender']} ({conv_id[:8]}...): \"{msg['content']}\""
-                                )
-                                await self.conv_manager.receive_message(
-                                    conversation_id=conv_id,
-                                    match_id=conv_id,
-                                    match_name=msg["sender"],
-                                    sender=msg["sender"],
-                                    content=msg["content"]
-                                )
-                                if self.window.reply_panel.current_conversation_id == conv_id:
-                                    recent_msgs = await MessageService.get_recent_messages(conv_id)
-                                    self.window.conversation_panel.display_messages(recent_msgs)
+                            any_saved = any_saved or saved is not None
+
+                        self._history_backfilled.add(conv_id)
+                        self._unread_conversations.discard(conv_id)
+
+                        # Determine who owes the next reply from message order, not
+                        # from Tinder's unreliable unread indicator. Walk backward
+                        # from the newest bubble until our last outgoing bubble.
+                        incoming_tail: list[dict] = []
+                        for msg in reversed(msgs):
+                            if msg["role"] == "outgoing":
+                                break
+                            if msg["role"] == "incoming":
+                                incoming_tail.append(msg)
+                        incoming_tail.reverse()
+
+                        if mode in ("AUTO", "SUGGEST") and incoming_tail:
+                            hashes = [msg["message_hash"] for msg in incoming_tail]
+                            statuses = await MessageService.get_statuses_by_hashes(hashes)
+                            pending_tail = [
+                                msg for msg in incoming_tail
+                                if statuses.get(msg["message_hash"]) in ("IGNORED", "NEW", "FAILED")
+                                and msg["message_hash"] not in self._queued_message_hashes
+                            ]
+                            if pending_tail and self._reserve_conversation_turn(conv_id, match_name):
+                                pending_hashes = [msg["message_hash"] for msg in pending_tail]
+                                queued_successfully = False
+                                try:
+                                    self._queued_message_hashes.update(pending_hashes)
+                                    await MessageService.update_messages_status(pending_hashes, "NEW")
+                                    logger.info(
+                                        f"💬 {match_name} đang chờ phản hồi ({len(pending_tail)} tin cuối), "
+                                        "giữ nguyên hội thoại này đến khi gửi xong."
+                                    )
+                                    for msg in pending_tail:
+                                        await self.conv_manager.receive_message(
+                                            conversation_id=conv_id,
+                                            match_id=conv_id,
+                                            match_name=match_name,
+                                            sender=match_name,
+                                            content=msg["content"],
+                                            message_hash=msg["message_hash"],
+                                            mode=mode,
+                                        )
+                                    queued_successfully = True
+                                finally:
+                                    if not queued_successfully:
+                                        self._queued_message_hashes.difference_update(pending_hashes)
+                                        self._release_conversation_turn(conv_id)
+                        elif mode == "OFF" and any_saved:
+                            logger.info(
+                                f"Match {match_name} đang OFF; chỉ đồng bộ lịch sử, không phản hồi."
+                            )
+
+                        if any_saved and self.window.reply_panel.current_conversation_id == conv_id:
+                            recent_msgs = await MessageService.get_recent_messages(conv_id)
+                            self.window.conversation_panel.display_messages(recent_msgs)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.debug(f"Message monitor loop iteration notice: {e}")
+                logger.warning(
+                    f"Message monitor iteration failed; incoming messages may not be auto-replied: {e}",
+                    exc_info=True,
+                )
 
             await asyncio.sleep(self.settings.scanner.message_scan_interval or 3.0)
 
@@ -666,8 +1048,12 @@ def run():
     app = QApplication(sys.argv)
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
-    with loop:
-        loop.run_until_complete(main())
+    sleep_preventer.prevent_sleep()
+    try:
+        with loop:
+            loop.run_until_complete(main())
+    finally:
+        sleep_preventer.allow_sleep()
 
 
 if __name__ == "__main__":

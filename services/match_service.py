@@ -42,15 +42,13 @@ class MatchService:
         async with get_db_session() as session:
             repo = MatchRepository(session)
             m = await repo.get_by_tinder_id(tinder_id)
-            return m.mode if m else "AUTO"
+            return m.mode if m else "OFF"
 
     @staticmethod
-    async def set_all_modes(mode: str) -> None:
-        """Update mode for all matches in the database."""
+    async def get_match(tinder_id: str):
         async with get_db_session() as session:
             repo = MatchRepository(session)
-            count = await repo.update_all_modes(mode)
-            logger.info(f"Updated database mode for ALL matches ({count} updated) -> {mode}")
+            return await repo.get_by_tinder_id(tinder_id)
 
     @staticmethod
     async def list_matches() -> list[dict]:

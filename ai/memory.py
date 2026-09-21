@@ -70,6 +70,10 @@ class ConversationContext:
     style_me: str
     asked_by_me: list[str]
     topic: str
+    asked_intents: list[str] = field(default_factory=list)
+    used_openers: list[str] = field(default_factory=list)
+    recent_topics: list[str] = field(default_factory=list)
+    recent_reply_patterns: list[str] = field(default_factory=list)
     new_messages: list[str] = field(default_factory=list)
 
     def render(self) -> str:
@@ -85,8 +89,12 @@ class ConversationContext:
             f"CÁCH XƯNG HÔ: {self.address}\n"
             f"PHONG CÁCH CỦA HỌ: {self.style_them}\n"
             f"PHONG CÁCH CỦA TÔI: {self.style_me}\n"
-            f"CHỦ ĐỀ HIỆN TẠI: {self.topic}\n\n"
-            f"CÂU TÔI ĐÃ HỎI RỒI (KHÔNG HỎI LẠI, kể cả diễn đạt khác):\n{asked}\n\n"
+            f"CHỦ ĐỀ HIỆN TẠI: {self.topic}\n"
+            f"CÁC CHỦ ĐỀ VỪA NÓI GẦN ĐÂY (chọn chủ đề mới nếu cần đổi): {', '.join(self.recent_topics[-5:]) or '(chưa có)'}\n"
+            f"PATTERN GẦN ĐÂY: {', '.join(self.recent_reply_patterns[-5:]) or '(chưa có)'}\n\n"
+            f"CÂU TÔI ĐÃ HỎI RỒI (KHÔNG HỎI LẠI):\n{asked}\n"
+            f"CÁC INTENT ĐÃ HỎI (TUYỆT ĐỐI KHÔNG HỎI LẠI DƯỚI BẤT KỲ HÌNH THỨC NÀO): {', '.join(self.asked_intents) or '(chưa có)'}\n"
+            f"OPENER ĐÃ DÙNG (không dùng lại): {', '.join(self.used_openers) or '(chưa có)'}\n\n"
             f"{len(self.recent)} TIN GẦN NHẤT (cũ -> mới):\n{recent}\n\n"
             f"TIN MỚI NHẤT CỦA HỌ (cần trả lời):\n{new}"
         )
@@ -253,6 +261,10 @@ class ConversationMemory:
             style_them=analyze_style(incoming[-30:] + new_messages),
             style_me=analyze_style(outgoing[-30:]),
             asked_by_me=extract_asked_questions(outgoing),
+            asked_intents=notes.get("asked_intents", []),
+            used_openers=notes.get("used_openers", []),
+            recent_topics=notes.get("recent_topics", []),
+            recent_reply_patterns=notes.get("recent_reply_patterns", []),
             topic=guess_topic(recent + [{"who": "họ", "content": t} for t in new_messages]),
             new_messages=list(new_messages),
         )
@@ -266,6 +278,10 @@ class ConversationMemory:
         return {
             "facts": [str(f) for f in facts] if isinstance(facts, list) else [],
             "summarized_until_id": int(data.get("summarized_until_id", 0) or 0),
+            "asked_intents": data.get("asked_intents", []),
+            "used_openers": data.get("used_openers", []),
+            "recent_topics": data.get("recent_topics", []),
+            "recent_reply_patterns": data.get("recent_reply_patterns", []),
         }
 
     async def _save(self, conversation_id: str, summary: str, facts: list[str], until_id: int) -> None:
@@ -278,6 +294,39 @@ class ConversationMemory:
             existing = await profile_repo.get_by_match_id(conversation_id)
             notes = (_parse_json(existing.notes_json) if existing and existing.notes_json else None) or {}
             notes = {**notes, "facts": facts, "summarized_until_id": until_id}
+            await profile_repo.upsert_profile(match_id=conversation_id, notes_json=notes)
+
+    async def update_advanced_memory(self, conversation_id: str, new_intent: str, new_topic: str, new_pattern: str, is_opener: bool = False, sent_messages: list[str] = None) -> None:
+        async with self._session() as session:
+            profile_repo = MatchProfileRepository(session)
+            existing = await profile_repo.get_by_match_id(conversation_id)
+            if not existing:
+                return
+            
+            notes = (_parse_json(existing.notes_json) if existing.notes_json else None) or {}
+            
+            if new_intent:
+                intents = notes.get("asked_intents", [])
+                if new_intent not in intents:
+                    intents.append(new_intent)
+                    notes["asked_intents"] = intents[-MAX_ASKED:]
+            
+            if new_topic:
+                topics = notes.get("recent_topics", [])
+                if not topics or topics[-1] != new_topic:
+                    topics.append(new_topic)
+                    notes["recent_topics"] = topics[-5:]
+                    
+            if new_pattern:
+                patterns = notes.get("recent_reply_patterns", [])
+                patterns.append(new_pattern)
+                notes["recent_reply_patterns"] = patterns[-5:]
+                
+            if is_opener and sent_messages:
+                openers = notes.get("used_openers", [])
+                openers.append(sent_messages[0])
+                notes["used_openers"] = openers[-5:]
+
             await profile_repo.upsert_profile(match_id=conversation_id, notes_json=notes)
 
     async def _summarize(self, conversation_id, summary, facts, old_msgs) -> tuple[str, list[str]]:

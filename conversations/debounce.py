@@ -11,19 +11,24 @@ class DebounceAccumulator:
         self,
         conversation_id: str,
         debounce_seconds: float,
-        on_flush: Callable[[list[str]], Coroutine[Any, Any, None]]
+        on_flush: Callable[[list[dict[str, str]]], Coroutine[Any, Any, None]]
     ):
         self.conversation_id = conversation_id
         self.debounce_seconds = debounce_seconds
         self.on_flush = on_flush
-        self._buffered_messages: list[str] = []
+        self._buffered_messages: list[dict[str, str]] = []
         self._timer_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
-    async def add_message(self, content: str) -> None:
+    async def add_message(self, content: str, message_hash: str | None = None) -> None:
         """Add a message and reset or start debounce countdown."""
         async with self._lock:
-            self._buffered_messages.append(content)
+            # Runtime calls always provide a DB hash. The string-only branch is
+            # retained for lightweight callers/tests that don't use persistence.
+            if message_hash is None:
+                self._buffered_messages.append(content)
+            else:
+                self._buffered_messages.append({"content": content, "hash": message_hash})
             
             # Cancel existing countdown timer to reset debounce period
             if self._timer_task and not self._timer_task.done():

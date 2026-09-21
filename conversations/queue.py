@@ -11,7 +11,7 @@ class ConversationState:
     conversation_id: str
     match_id: str
     match_name: str
-    mode: str = "SUGGEST"  # OFF, SUGGEST, AUTO
+    mode: str = "OFF"  # OFF, SUGGEST, AUTO
     status: str = "ACTIVE_CHAT"
     profile: dict[str, Any] = field(default_factory=dict)
     summary: str = ""

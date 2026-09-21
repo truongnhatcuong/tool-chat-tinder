@@ -3,7 +3,7 @@ import asyncio
 import ssl
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Any
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -143,17 +143,66 @@ async def get_db_session() -> AsyncGenerator[Any, None]:
                 raise
 
 
+def _apply_schema_migrations(sync_conn: Any) -> None:
+    """Add columns introduced after initial deployment without deleting existing data."""
+    inspector = inspect(sync_conn)
+    table_names = set(inspector.get_table_names())
+
+    migrations = {
+        "conversations": {
+            "summary": "TEXT",
+            "status": "VARCHAR(64) NOT NULL DEFAULT 'ACTIVE_CHAT'",
+        },
+        "match_profiles": {
+            "interests_json": "TEXT",
+            "notes_json": "TEXT",
+        },
+        "messages": {
+            "status": "VARCHAR(32) NOT NULL DEFAULT 'NEW'",
+        },
+        "ai_replies": {
+            "message_hashes": "TEXT",
+        },
+    }
+
+    for table_name, required_columns in migrations.items():
+        if table_name not in table_names:
+            continue
+        existing_columns = {
+            column["name"] for column in inspector.get_columns(table_name)
+        }
+        for column_name, column_definition in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            logger.warning(
+                f"Database schema is outdated; adding {table_name}.{column_name}."
+            )
+            sync_conn.execute(
+                text(
+                    f"ALTER TABLE `{table_name}` "
+                    f"ADD COLUMN `{column_name}` {column_definition}"
+                )
+            )
+
+
 async def init_db() -> None:
-    """Create all tables in the configured database."""
+    """Create tables and safely upgrade older database schemas."""
     url = get_settings().database_url
     if _is_mysql(url):
         engine = get_sync_engine()
-        await asyncio.to_thread(Base.metadata.create_all, engine)
+
+        def _initialize_mysql() -> None:
+            Base.metadata.create_all(engine)
+            with engine.begin() as conn:
+                _apply_schema_migrations(conn)
+
+        await asyncio.to_thread(_initialize_mysql)
     else:
         engine = get_async_engine()
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database schema initialized successfully.")
+            await conn.run_sync(_apply_schema_migrations)
+    logger.info("Database schema initialized and migrated successfully.")
 
 
 async def test_db_connection() -> bool:

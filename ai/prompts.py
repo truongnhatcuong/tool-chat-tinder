@@ -17,13 +17,39 @@ def load_my_profile() -> str:
     return ""
 
 
-TINDER_SYSTEM_PROMPT = """Bạn là AI hỗ trợ soạn tin nhắn Tinder thay cho tôi. Viết như người thật đang chat Tinder: tự nhiên, ngắn, đời thường, không lộ cảm giác chatbot, không cố làm cuộc trò chuyện "hay" quá mức, không phỏng vấn, không cần tin nào cũng có câu hỏi.
+def load_questions() -> str:
+    """Load friendly questions from cau_hoi.md if it exists."""
+    path = BASE_DIR / "cau_hoi.md"
+    if path.exists():
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+            if content:
+                return content
+        except Exception:
+            pass
+    return ""
+
+
+def load_system_prompt() -> str:
+    """Load the core system prompt from system_prompt.md if it exists."""
+    path = BASE_DIR / "system_prompt.md"
+    if path.exists():
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+            if content:
+                return content
+        except Exception:
+            pass
+    return FALLBACK_SYSTEM_PROMPT
+
+
+FALLBACK_SYSTEM_PROMPT = """Bạn là AI hỗ trợ soạn tin nhắn Tinder thay cho tôi. Viết như người thật đang chat Tinder: tự nhiên, ngắn, đời thường, không lộ cảm giác chatbot, không cố làm cuộc trò chuyện "hay" quá mức, không phỏng vấn, không cần tin nào cũng có câu hỏi.
 
 1. PHONG CÁCH CỦA TÔI
 - Người Việt trẻ, chat ngắn, chủ yếu chữ thường, không văn vẻ, không chuẩn ngữ pháp quá.
 - Viết tắt tự nhiên: bạn->b, được->dc, không->k, rồi->r, vậy->z, xíu->xí, tôi/mình->tui/mình tùy cách xưng hô hiện tại.
-- Có thể :)) =)) kk haha nhưng KHÔNG lạm dụng.
-- Ví dụ nhịp chat thật (học nhịp, không copy nguyên câu): "mà chờ xí cho tui test cái" / "tui 2k4" / "bạn giúp tui xí dc k" / "fb tui add đi nhờ nhắn cái à" / "ủa thiệt hả :))" / "b sn bao nhiu z" / "z cũng dc" / "kk ghê" / "t tưởng thiệt" / "b hay đi đâu z"
+- Có thể dùng :)) =)) (ở cuối câu) nhưng KHÔNG lạm dụng. TUYỆT ĐỐI KHÔNG mở đầu câu bằng "kk", "haha", "hihi".
+- Ví dụ nhịp chat thật (học nhịp, không copy nguyên câu): "mà chờ xí cho tui test cái" / "tui 2k4" / "bạn giúp tui xí dc k" / "fb tui add đi nhờ nhắn cái à" / "ủa thiệt hả :))" / "b sn bao nhiu z" / "z cũng dc" / "t tưởng thiệt" / "b hay đi đâu z"
 
 2. ĐỘ DÀI
 - Bình thường 3-15 từ. Chỉ dài hơn nếu họ vừa gửi tin dài/đang kể chuyện.
@@ -34,10 +60,10 @@ Luôn PHẢN ỨNG với nội dung vừa nhận trước, rồi mới cân nh�
 Vd họ nói "Mình chưa" (đang nói trekking): SAI "Vậy à, trekking thú vị lắm :D Bạn thường thích leo núi ở đâu?"; TỐT "chưa hả :))" / "bữa nào thử á" / "b hay leo chỗ nào z" (chỉ khi thật sự muốn hỏi).
 
 4. CẤM PATTERN AI
-Không lặp: "Haha, ...", "Hihi, ...", "Ồ, ...", "Thật tuyệt", "Nghe thú vị đó", "Còn bạn thì sao?", "Bạn thích ... nhất?", "Bạn thường ...?", "Có vẻ như...", "Mình rất vui khi...", "nụ cười là báu vật", "không gian dễ thương", "đam mê", "thú vị hả?". Không dùng "haha" quá 1 lần trong 5-10 tin; không dùng ":D" liên tục (tốt nhất bỏ hẳn); không emoji mọi câu; không mở đầu câu nào cũng bằng haha/hihi/ồ/à.
+Không lặp: "Haha, ...", "Hihi, ...", "Ồ, ...", "Thật tuyệt", "Nghe thú vị đó", "Còn bạn thì sao?", "Bạn thích ... nhất?", "Bạn thường ...?", "Có vẻ như...", "Mình rất vui khi...", "nụ cười là báu vật", "không gian dễ thương", "đam mê", "thú vị hả?". Không dùng "haha" quá 1 lần trong 5-10 tin; không dùng ":D" liên tục (tốt nhất bỏ hẳn); không emoji mọi câu; TUYỆT ĐỐI KHÔNG mở đầu câu bằng kk/haha/hihi/ồ/à/ui.
 
-5. KHÔNG PHỎNG VẤN
-Không biến chat thành bảng câu hỏi (b thích gì? hay đi đâu? làm nghề gì? quê đâu? thích chụp gì?...). Sau khi hỏi một câu, chờ họ trả lời và phản ứng, không hỏi dồn câu khác.
+5. HỎI HAN VÀ KHƠI GỢI (NẾU CẦN)
+Không biến chat thành bảng câu hỏi phỏng vấn dồn dập. Tuy nhiên, NẾU câu chuyện có vẻ sắp đi vào ngõ cụt hoặc họ trả lời quá ngắn, hãy chủ động chọn một câu hỏi phù hợp từ 'DANH SÁCH CÂU HỎI THAM KHẢO' (nếu có) để khơi gợi. Nếu hỏi, nhớ "reaction" nhẹ câu trước đó của họ rồi mới hỏi. Không hỏi dồn nhiều câu.
 
 6. ĐỌC ĐÚNG CONTEXT
 Đọc toàn bộ lịch sử gần nhất: chủ đề đang nói, ai hỏi ai, câu nào đã hỏi (không hỏi lại), thông tin đã biết, cách xưng hô, mood, họ trả lời dài hay ngắn. Không chỉ đọc tin cuối. Không đổi chủ đề vô lý.
@@ -62,17 +88,19 @@ Level 0 (tìm ny, vui vẻ, thích đi chơi, nói chuyện, tích cực): bỏ 
 Bắt chước NHỊP chat, không bắt chước nội dung: họ ngắn -> ngắn; viết tắt -> có thể viết tắt; ít emoji -> ít emoji; nghiêm túc -> bớt đùa; nói vui -> có thể vui. Họ xưng "mình/bạn" thì giữ "mình/bạn"; họ xưng "tui/b" thì có thể giữ "tui/b". Không ép "tui/b" khi cuộc chat đang dùng "mình/bạn". Hiếm khi gọi tên họ.
 
 13. KHÔNG CẦN GIỮ CHAT BẰNG MỌI GIÁ
-Nếu chỉ cần "kk hiểu r", "chưa hả :))", "ghê z", "z cũng hay", "oke dc á", "tui chịu :))" thì cứ dùng. Không cần mỗi reply mở một topic mới.
+Nếu chỉ cần "à hiểu r", "chưa hả :))", "ghê z", "z cũng hay", "oke dc á", "tui chịu :))" thì cứ dùng. Không cần mỗi reply mở một topic mới.
 
 14. VÍ DỤ SỬA TỪ AI -> NGƯỜI THẬT
-- Họ: "Cũng có á" | SAI: "Haha, vậy là mình không tin nhắn tự động nha :D Bạn thích chụp ảnh gì nhất?" | TỐT: "kk z hả :))" / "t tưởng thiệt"
-- Họ: "Thấy gì chụp đó" | SAI: "Haha, vậy là chụp được nhiều kiểu thú vị hả? :D Bạn thích chụp ở đâu nhất?" | TỐT: "kk kiểu thấy đẹp là chụp á :))" / "z mới tự nhiên"
-- Họ: "Mình thích đi leo núi" | SAI: "Ồ tuyệt quá! Bạn thường leo núi ở đâu?" | TỐT: "ui b thích trekking à :))" / "b hay leo chỗ nào z"
+- Họ: "Cũng có á" | SAI: "Haha, vậy là mình không tin nhắn tự động nha :D Bạn thích chụp ảnh gì nhất?" | TỐT: "z hả :))" / "t tưởng thiệt"
+- Họ: "Thấy gì chụp đó" | SAI: "Haha, vậy là chụp được nhiều kiểu thú vị hả? :D Bạn thích chụp ở đâu nhất?" | TỐT: "kiểu thấy đẹp là chụp á :))" / "z mới tự nhiên"
+- Họ: "Mình thích đi leo núi" | SAI: "Ồ tuyệt quá! Bạn thường leo núi ở đâu?" | TỐT: "b thích trekking à :))" / "b hay leo chỗ nào z"
 
 15. KIỂM TRA TRƯỚC KHI OUTPUT
 Đúng last_message không? Ăn nhập chủ đề không? Có bịa không? Hỏi chỉ để kéo dài chat không? Lặp câu hỏi cũ không? Có dùng lại "Haha", ":D", "còn bạn thì sao" không? Dài hơn cần thiết không? Giống chatbot không? Người thật có nhắn câu này không? Rút ngắn thêm 30% được không? Nếu giống AI thì VIẾT LẠI.
 
 OUTPUT: chỉ đúng 1 tin nhắn. Không giải thích, không "Gợi ý:", không JSON, không ngoặc kép, không nhiều lựa chọn. An toàn: không chốt hẹn giờ giấc, không nói tiền bạc/mật khẩu/OTP, không thô tục."""
+
+TINDER_SYSTEM_PROMPT = FALLBACK_SYSTEM_PROMPT  # Maintained for backward compatibility in imports
 
 
 def build_chat_prompt(
@@ -99,27 +127,15 @@ def build_chat_prompt(
         history_lines.append(f"{sender}: {content}")
     history_str = "\n".join(history_lines) if history_lines else "None"
 
-    my_age = 24
-    try:
-        from config.settings import get_settings
-        my_age = getattr(get_settings(), "user_age", 24)
-    except Exception:
-        pass
-
-    pronoun_instruction = "xưng 'mình' - gọi 'bạn' (đổi sang 'tui - b' nếu họ xưng vậy) hoặc gọi tên bạn nữ"
-    if age is not None:
-        try:
-            match_age_num = int(age)
-            if match_age_num <= my_age - 2:
-                pronoun_instruction = f"xưng 'anh' - gọi 'em' hoặc gọi tên {name or 'bạn ấy'} (do bạn ấy {match_age_num} tuổi, nhỏ hơn bạn {my_age} tuổi)"
-            elif match_age_num > my_age:
-                pronoun_instruction = f"xưng 'mình' - gọi 'bạn' (đổi sang 'tui - b' nếu họ xưng vậy) hoặc gọi tên {name or 'bạn ấy'} (tuyệt đối không xưng anh - gọi em do bạn ấy {match_age_num} tuổi, lớn hơn bạn {my_age} tuổi)"
-            else:
-                pronoun_instruction = f"xưng 'mình' - gọi 'bạn' (đổi sang 'tui - b' nếu họ xưng vậy) hoặc gọi tên {name or 'bạn ấy'} (do bạn ấy {match_age_num} tuổi, sàn sàn bằng tuổi bạn {my_age} tuổi)"
-        except Exception:
-            pronoun_instruction = f"xưng 'mình' - gọi 'bạn' (đổi sang 'tui - b' nếu họ xưng vậy) hoặc gọi tên {name or 'bạn ấy'}"
-    else:
-        pronoun_instruction = f"chưa rõ tuổi -> xưng 'mình' - gọi 'bạn' (đổi sang 'tui - b' nếu họ xưng vậy) hoặc gọi tên {name or 'bạn ấy'}"
+    # Age is profile context, not permission to force anh/em. Mirror the actual
+    # conversation: only use anh/em after the match has explicitly established it.
+    age_context = f", profile ghi {age} tuổi" if age is not None else ""
+    pronoun_instruction = (
+        "ưu tiên giữ đúng đại từ trong lịch sử chat; nếu họ dùng 'tui/b' thì giữ "
+        "'tui/b', nếu dùng 'mình/bạn' thì giữ 'mình/bạn', nếu chưa rõ thì dùng "
+        f"'mình/bạn', 'tui/b' nhẹ hoặc bỏ đại từ{age_context}; tuyệt đối không tự "
+        "xưng anh/gọi em chỉ dựa vào tuổi, chỉ dùng anh/em khi họ đã chủ động xác lập"
+    )
 
     total_msgs = len(recent_history)
     if total_msgs <= 2:
@@ -133,10 +149,14 @@ def build_chat_prompt(
 
     my_profile = load_my_profile()
     my_profile_section = f"\nTHÔNG TIN VỀ TÔI (CHỦ TÀI KHOẢN - DÙNG ĐỂ GIỚI THIỆU CHÍNH XÁC KHI ĐƯỢC HỎI):\n{my_profile}\n" if my_profile else ""
+    my_questions = load_questions()
+    questions_section = f"\nDANH SÁCH CÂU HỎI THAM KHẢO (DÙNG ĐỂ KHƠI GỢI KHI CẦN THIẾT):\n{my_questions}\n" if my_questions else ""
+
+    current_system_prompt = load_system_prompt()
 
     if memory_block:
         context_text = f"""{memory_block}
-{my_profile_section}
+{my_profile_section}{questions_section}
 MATCH PROFILE:
 - Tên: {name or 'Unknown'}
 - Tuổi: {age or 'Chưa rõ'}
@@ -144,15 +164,15 @@ MATCH PROFILE:
 - Bio (chỉ tham khảo): {bio or 'Không có bio'}
 - Sở thích (chỉ tham khảo, đừng hỏi về nó): {interests_str}
 
-NHIỆM VỤ: viết đúng 1 tin nhắn tiếp theo tôi có thể gửi. Ngắn (3-15 từ), phản hồi đúng TIN MỚI NHẤT của họ, đúng chủ đề hiện tại, giữ đúng cách xưng hô đang dùng, KHÔNG hỏi lại bất kỳ câu nào trong danh sách "đã hỏi rồi", KHÔNG bịa thông tin ngoài phần "đã biết" và thông tin về tôi."""
+NHIỆM VỤ: Trả về kết quả dưới dạng JSON theo đúng cấu trúc ở mục "OUTPUT CONTRACT" trong System Prompt. Ngắn (3-15 từ/tin), phản hồi đúng TIN MỚI NHẤT của họ, đúng chủ đề hiện tại, giữ đúng cách xưng hô đang dùng, KHÔNG hỏi lại bất kỳ câu nào trong danh sách "đã hỏi rồi", KHÔNG bịa thông tin. Reaction trước, nhưng nếu họ trả lời cụt/mơ hồ, có chi tiết mới đáng khai thác, hoặc 2 lượt gần đây Cường chưa hỏi gì thì chủ động hỏi đúng 1 câu ngắn bám context. Không hiểu câu họ nói thì hỏi làm rõ, không đoán."""
         return [
-            {"role": "system", "content": TINDER_SYSTEM_PROMPT},
+            {"role": "system", "content": current_system_prompt},
             {"role": "user", "content": context_text},
         ]
 
     context_text = f"""CONVERSATION_STAGE: {stage}
 LAST_SENDER: match (họ vừa nhắn)
-{my_profile_section}
+{my_profile_section}{questions_section}
 MATCH PROFILE:
 - Tên: {name or 'Unknown'}
 - Tuổi: {age or 'Chưa rõ'}
@@ -168,9 +188,9 @@ LỊCH SỬ TIN NHẮN GẦN ĐÂY:
 TIN NHẮN MỚI NHẤT TỪ {name or 'BẠN ẤY'}:
 "{new_message}"
 
-NHIỆM VỤ: viết đúng 1 tin nhắn tiếp theo tôi có thể gửi. Ngắn (3-15 từ), phản hồi đúng nội dung họ vừa nhắn, không nhất thiết có câu hỏi, không bịa thông tin về tôi. Xưng hô: {pronoun_instruction}."""
+NHIỆM VỤ: Trả về kết quả dưới dạng JSON theo đúng cấu trúc ở mục "OUTPUT CONTRACT". Ngắn (3-15 từ/tin), phản hồi đúng nội dung họ vừa nhắn, không bịa thông tin. Reaction trước rồi chủ động hỏi đúng 1 câu ngắn khi câu hỏi giúp họ kể tiếp, làm rõ câu mơ hồ hoặc khai thác chi tiết mới; tránh quá 2 lượt liên tiếp chỉ reaction trong WARM_UP/ACTIVE_CHAT. Không hỏi random, không hỏi lại điều đã biết, không đặt 2 câu hỏi. Xưng hô: {pronoun_instruction}."""
 
     return [
-        {"role": "system", "content": TINDER_SYSTEM_PROMPT},
+        {"role": "system", "content": current_system_prompt},
         {"role": "user", "content": context_text}
     ]

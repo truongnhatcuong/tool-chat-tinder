@@ -15,7 +15,8 @@ class MessageService:
         sender: str,
         role: str,
         content: str,
-        message_hash: str
+        message_hash: str,
+        status: str = "NEW",
     ) -> MessageModel | None:
         async with get_db_session() as session:
             msg_repo = MessageRepository(session)
@@ -34,7 +35,8 @@ class MessageService:
                 sender=sender,
                 role=role,
                 content=content,
-                message_hash=message_hash
+                message_hash=message_hash,
+                status=status,
             )
             return msg
 
@@ -52,3 +54,21 @@ class MessageService:
                 }
                 for m in models
             ]
+
+    @staticmethod
+    async def update_messages_status(message_hashes: list[str], new_status: str) -> None:
+        async with get_db_session() as session:
+            repo = MessageRepository(session)
+            await repo.update_messages_status(message_hashes, new_status)
+
+    @staticmethod
+    async def get_messages_by_status(conversation_id: str, status: str) -> list[MessageModel]:
+        async with get_db_session() as session:
+            repo = MessageRepository(session)
+            return await repo.get_messages_by_status(conversation_id, status)
+
+    @staticmethod
+    async def get_statuses_by_hashes(message_hashes: list[str]) -> dict[str, str]:
+        async with get_db_session() as session:
+            repo = MessageRepository(session)
+            return await repo.get_statuses_by_hashes(message_hashes)

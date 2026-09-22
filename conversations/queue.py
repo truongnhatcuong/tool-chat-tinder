@@ -17,8 +17,8 @@ class ConversationState:
     summary: str = ""
     history: list[dict[str, str]] = field(default_factory=list)
     pending_bundle: list[str] = field(default_factory=list)
-    queue: asyncio.Queue = field(default_factory=asyncio.Queue)
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    queue: asyncio.Queue | None = None
+    lock: asyncio.Lock | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def append_message(self, role: str, sender: str, content: str):

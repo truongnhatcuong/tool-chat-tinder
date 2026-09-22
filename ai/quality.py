@@ -401,6 +401,25 @@ def find_style_problems(reply: AIReply, ctx: QualityContext) -> list[str]:
     return problems
 
 
+def find_dead_end_replies(reply: AIReply, ctx: QualityContext) -> list[str]:
+    """Prevent conversation killers: short agreements with no question or hook."""
+    if reply_asks(reply, ctx) or ctx.closure_now:
+        return []
+        
+    problems: list[str] = []
+    text = " ".join(reply.messages).strip()
+    n = normalize(text)
+    
+    if len(n.split()) <= 7:
+        tokens = _content_tokens(text)
+        if len(tokens) <= 1:
+            problems.append(
+                f"câu trả lời quá cụt ngủn/đi vào ngõ cụt: '{text}'. "
+                "Yêu cầu: vẫn có thể giữ câu cảm thán/phản hồi đó, NHƯNG phải thêm 1 câu khác (có thể tách thành 2 tin nhắn) để trêu đùa, thả thính ngầm hoặc hỏi nhẹ để đối phương có cớ trả lời tiếp."
+            )
+    return problems
+
+
 def check_reply(reply: AIReply, ctx: QualityContext) -> list[str]:
     """Run every check; PASS == empty list."""
     if reply.action == "WAIT" or not reply.messages:
@@ -414,6 +433,7 @@ def check_reply(reply: AIReply, ctx: QualityContext) -> list[str]:
     problems += find_repeated_questions(reply, ctx)
     problems += find_echo_replies(reply.messages, ctx.new_texts)
     problems += find_style_problems(reply, ctx)
+    problems += find_dead_end_replies(reply, ctx)
     seen: set[str] = set()
     return [p for p in problems if not (p in seen or seen.add(p))]
 
@@ -463,4 +483,20 @@ def build_guidance(ctx: QualityContext) -> str:
         lines.append(
             f"CÁC TIN TÔI VỪA GỬI (tuyệt đối không ghép lại, không nhắc lại ý, không phản ứng lần nữa với cùng thông tin của họ): {sent}"
         )
+        
+    # Điều phối số lượng tin nhắn (1 hoặc 2) để nhịp điệu tự nhiên hơn
+    last_me_count = 0
+    found_me = False
+    for who, text in reversed(ctx.dialogue):
+        if who == "me":
+            last_me_count += 1
+            found_me = True
+        elif found_me:
+            break
+            
+    if last_me_count >= 2:
+        lines.append("SỐ LƯỢNG TIN NHẮN: Lượt trước đã tách thành nhiều tin rồi, lượt này NÊN GỘP ý thành 1 tin nhắn duy nhất.")
+    elif last_me_count == 1:
+        lines.append("SỐ LƯỢNG TIN NHẮN: Lượt trước gửi 1 tin rồi, lượt này CÓ THỂ tách thành 2 tin nhắn (nếu có nhiều ý) để giống người thật đang gõ phím.")
+        
     return "\n".join(lines)

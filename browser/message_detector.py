@@ -75,11 +75,14 @@ class MessageDetector:
                 );
 
                 const list = [];
-                const seenTexts = new Set();
                 const usedElements = [];
 
                 for (const el of candidates) {
-                    const rawText = (el.innerText || '').trim();
+                    let rawText = (el.innerText || '').trim();
+                    if (!rawText) {
+                        // Tinder hides GIF labels (e.g. <strong class="Hidden">) from innerText
+                        rawText = (el.textContent || '').trim();
+                    }
                     if (!rawText) continue;
                     // Ignore banners, headers, timestamps
                     if (rawText.includes('tương hợp') || rawText.toLowerCase().includes('you matched')) continue;
@@ -107,12 +110,18 @@ class MessageDetector:
                         isOutgoing = true;
                         roleDetermined = true;
                         text = rawText.replace(/^(Bạn|You)\\s*:\\s*/i, '').trim();
+                        if (rawText.toLowerCase().includes('đã gửi ảnh gif') || rawText.toLowerCase().includes('sent a gif')) text = '[Bạn đã gửi ảnh GIF]';
                         if (!text) continue;
+                    } else if (rawText.toLowerCase().includes('đã gửi ảnh gif') || rawText.toLowerCase().includes('sent a gif')) {
+                        text = '[Đã gửi một ảnh GIF]';
+                        isOutgoing = false;
+                        roleDetermined = true;
                     } else {
                         // Screen-reader label "<Name>:\\n<message>" on their bubbles
-                        const lm = rawText.match(/^[^\\n:]{1,40}:\\s*\\n([\\s\\S]+)$/);
+                        // Tinder now sometimes prepends "Đã gửi vào hh:mm\\nhh:mm\\n"
+                        const lm = rawText.match(/(?:^|\\\\n)([^\\\\n:]{1,40}):\\\\s*\\\\n([\\\\s\\\\S]+)$/);
                         if (lm) {
-                            text = lm[1].trim();
+                            text = lm[2].trim();
                             isOutgoing = false;
                             roleDetermined = true;
                         }
@@ -149,14 +158,10 @@ class MessageDetector:
                     // is reported as 'unknown' so callers can refuse to reply.
                     usedElements.push(el);
                     const roleName = !roleDetermined ? 'unknown' : (isOutgoing ? 'outgoing' : 'incoming');
-                    const key = roleName + ':' + text;
-                    if (!seenTexts.has(key)) {
-                        seenTexts.add(key);
-                        list.push({
-                            content: text,
-                            role: roleName
-                        });
-                    }
+                    list.push({
+                        content: text,
+                        role: roleName
+                    });
                 }
                 return list;
             }""")

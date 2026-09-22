@@ -46,6 +46,8 @@ class ConversationManager:
                     match_name=match_name,
                     mode=mode
                 )
+                state.queue = asyncio.Queue()
+                state.lock = asyncio.Lock()
                 self._states[conversation_id] = state
 
                 # Create a dedicated per-conversation worker. The shared wrapper

@@ -96,7 +96,7 @@ class ConversationManager:
 
         # Feed to debounce accumulator
         debouncer = self._debouncers[conversation_id]
-        await debouncer.add_message(content, message_hash)
+        await debouncer.add_message(content, message_hash, conversation_id)
 
     async def _run_ai_handler(
         self,
@@ -113,9 +113,18 @@ class ConversationManager:
             logger.info(
                 f"Queuing bundled messages for {conversation_id} ({len(bundled_messages)} msgs)"
             )
-            # Runtime bundles contain hashes and are persisted. String-only
-            # bundles are supported for non-persistent callers/tests.
+            # Runtime bundles contain hashes and an immutable conversation ID.
+            # Reject rather than enqueue if any pending item escaped its owner.
             if bundled_messages and isinstance(bundled_messages[0], dict):
+                wrong_ids = {
+                    m.get("conversation_id") for m in bundled_messages
+                    if m.get("conversation_id") != conversation_id
+                }
+                if wrong_ids:
+                    logger.error(
+                        f"QUEUE_CHAT_ID mismatch for {conversation_id}: {sorted(wrong_ids)}; bundle dropped"
+                    )
+                    return
                 from services.message_service import MessageService
                 hashes = [m["hash"] for m in bundled_messages]
                 await MessageService.update_messages_status(hashes, "GENERATING")

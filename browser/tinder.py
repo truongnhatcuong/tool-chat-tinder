@@ -1,4 +1,5 @@
 """High level Tinder browser automation wrapper."""
+import asyncio
 import re
 from playwright.async_api import Page
 from browser.manager import BrowserManager
@@ -33,19 +34,104 @@ class TinderBrowser:
             return match.group(1)
         return None
 
+    async def get_chat_dom_signature(self) -> str:
+        """Return a compact fingerprint of the currently rendered chat DOM."""
+        if not self.page or self.page.is_closed():
+            return ""
+        try:
+            return await self.page.evaluate(r"""() => {
+                const section = document.querySelector(
+                    "div.chat section, section[class*='Fx($flx2)'], div[role='log']"
+                );
+                const main = section || document.querySelector('main');
+                if (!main) return '';
+                const heading = Array.from(document.querySelectorAll('h1, h2'))
+                    .map(el => (el.innerText || '').trim())
+                    .filter(Boolean)
+                    .slice(0, 4)
+                    .join('|');
+                const text = (main.innerText || '').replace(/\s+/g, ' ').trim();
+                return `${heading}::${text}`.slice(0, 4000);
+            }""")
+        except Exception:
+            return ""
+
+    async def wait_for_conversation_ready(
+        self,
+        conversation_id: str,
+        previous_signature: str = "",
+        timeout_seconds: float = 8.0,
+    ) -> tuple[bool, str]:
+        """Wait until the URL and rendered chat both belong to the requested ID.
+
+        Tinder updates the SPA URL before replacing the chat pane.  Merely reading
+        the new URL can therefore pair conversation B's ID with conversation A's
+        still-rendered bubbles.  When changing chats, require the rendered
+        fingerprint to change and then remain stable before it may be parsed.
+        """
+        if not self.page or self.page.is_closed():
+            return False, ""
+
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        stable_signature = ""
+        stable_count = 0
+        while asyncio.get_running_loop().time() < deadline:
+            if self.get_current_conversation_id() != conversation_id:
+                return False, ""
+
+            ready = await self.page.evaluate("""() => {
+                const chat = document.querySelector(
+                    "div.chat section, section[class*='Fx($flx2)'], div[role='log'], main"
+                );
+                const input = document.querySelector(
+                    "textarea[placeholder*='Nhập tin nhắn'], textarea[placeholder*='Type a message'], " +
+                    "textarea[placeholder*='Nhắn tin'], div[contenteditable='true']"
+                );
+                return Boolean(chat && input);
+            }""")
+            signature = await self.get_chat_dom_signature() if ready else ""
+            changed = not previous_signature or signature != previous_signature
+            if ready and signature and changed:
+                if signature == stable_signature:
+                    stable_count += 1
+                else:
+                    stable_signature = signature
+                    stable_count = 1
+                if stable_count >= 2:
+                    logger.info(f"Chat DOM ready for conversation {conversation_id}")
+                    return True, signature
+            else:
+                stable_signature = ""
+                stable_count = 0
+            await asyncio.sleep(0.15)
+
+        logger.warning(
+            f"Chat DOM did not become safely associated with {conversation_id}; "
+            "skipping this scan to avoid stale cross-conversation history."
+        )
+        return False, ""
+
     async def open_conversation(self, conversation_id_or_match_id: str) -> bool:
-        """Navigate to or click the target conversation."""
+        """Navigate to a conversation and wait for its chat DOM to be ready."""
         if not self.page or self.page.is_closed():
             return False
-        
+
+        current_id = self.get_current_conversation_id()
+        previous_signature = (
+            await self.get_chat_dom_signature()
+            if current_id != conversation_id_or_match_id
+            else ""
+        )
         target_url = f"https://tinder.com/app/messages/{conversation_id_or_match_id}"
-        if self.page.url == target_url:
-            return True
-        
         try:
-            logger.info(f"Navigating to conversation {conversation_id_or_match_id}...")
-            await self.page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
-            return True
+            if current_id != conversation_id_or_match_id:
+                logger.info(f"Navigating to conversation {conversation_id_or_match_id}...")
+                await self.page.goto(target_url, wait_until="domcontentloaded", timeout=20000)
+            ready, _ = await self.wait_for_conversation_ready(
+                conversation_id_or_match_id,
+                previous_signature=previous_signature,
+            )
+            return ready
         except Exception as e:
             logger.warning(f"Failed to navigate to conversation: {e}")
             return False

@@ -11,7 +11,7 @@ from browser.manager import BrowserManager
 from browser.tinder import TinderBrowser
 from browser.match_scanner import MatchScanner
 from browser.message_detector import MessageDetector
-from browser.sender import MessageSender
+from browser.sender import ConversationMismatchError, MessageSender
 from conversations.manager import ConversationManager
 from conversations.queue import ConversationState
 from ai.client import LLMClient
@@ -65,6 +65,13 @@ class TinderAppController:
         # completing worker may release this reservation.
         self._active_conversation_turn: str | None = None
         self._active_conversation_name: str = ""
+        # Browser chat identity/version. The version changes whenever the monitor
+        # observes a different URL ID, invalidating AI work started for the old ID.
+        self._observed_chat_id: str | None = None
+        self._observed_chat_signature: str = ""
+        self._chat_generation: int = 0
+        # Prevent a slow A database load from repainting the GUI after fast A -> B.
+        self._ui_selection_generation: int = 0
         self._is_running = True
 
     async def initialize(self):
@@ -209,6 +216,64 @@ class TinderAppController:
             self._active_conversation_turn = None
             self._active_conversation_name = ""
 
+    def _observe_chat_id(self, conversation_id: str | None, signature: str = "") -> int:
+        """Record a browser chat switch and invalidate work from the previous chat."""
+        if conversation_id != self._observed_chat_id:
+            old_id = self._observed_chat_id
+            self._observed_chat_id = conversation_id
+            self._observed_chat_signature = signature
+            self._chat_generation += 1
+            logger.info(
+                f"Chat identity changed: {old_id!r} -> {conversation_id!r}; "
+                f"generation={self._chat_generation}"
+            )
+        elif signature:
+            self._observed_chat_signature = signature
+        return self._chat_generation
+
+    def _log_turn_identity(
+        self,
+        *,
+        state_chat_id: str,
+        memory_chat_id: str | None,
+        queue_chat_id: str,
+        latest_message: str,
+        profile_name: str,
+    ) -> None:
+        current_id = self.tinder_browser.get_current_conversation_id()
+        logger.info(
+            "CURRENT_CHAT_ID=%s STATE_CHAT_ID=%s MEMORY_CHAT_ID=%s "
+            "QUEUE_CHAT_ID=%s LATEST_MESSAGE=%r PROFILE_NAME=%r",
+            current_id,
+            state_chat_id,
+            memory_chat_id,
+            queue_chat_id,
+            latest_message,
+            profile_name,
+        )
+
+    def _turn_is_current(
+        self,
+        conversation_id: str,
+        generation: int,
+        memory_chat_id: str | None = None,
+    ) -> bool:
+        current_id = self.tinder_browser.get_current_conversation_id()
+        ids_match = (
+            current_id == conversation_id
+            and self._observed_chat_id == conversation_id
+            and (memory_chat_id is None or memory_chat_id == conversation_id)
+        )
+        return ids_match and generation == self._chat_generation
+
+    async def _abort_stale_turn(self, conversation_id: str, message_hashes: list[str], reason: str) -> None:
+        """Discard invalidated work without generating, persisting, or sending a reply."""
+        logger.warning(f"Cancelled stale reply for {conversation_id}: {reason}")
+        self._pending_reply_meta.pop(conversation_id, None)
+        self._queued_message_hashes.difference_update(message_hashes)
+        if message_hashes:
+            await MessageService.update_messages_status(message_hashes, "FAILED")
+
     async def on_matches_scanned(self, matches: list[dict]):
         """Handler when match scanner finds matches."""
         synced = await MatchService.sync_matches(matches)
@@ -220,22 +285,20 @@ class TinderAppController:
                 mode=m["mode"]
             )
 
-        # A detected waiting conversation owns the tab until its entire reply is
-        # complete. Do not round-robin to another person during debounce or AI.
+        # A manual chat switch invalidates the reserved turn. Never navigate back
+        # to A after the user selected B: stale A work must die, not steal the tab.
         reserved_id = self._active_conversation_turn
         if reserved_id and self.browser_mgr.page and not self.browser_mgr.page.is_closed():
-            async with self._browser_operation_lock:
-                if self.tinder_browser.get_current_conversation_id() != reserved_id:
-                    logger.info(
-                        f"↩️ Quay lại hội thoại đang xử lý "
-                        f"{self._active_conversation_name or reserved_id}."
-                    )
-                    await self.browser_mgr.page.goto(
-                        f"https://tinder.com/app/messages/{reserved_id}",
-                        wait_until="networkidle",
-                        timeout=15000,
-                    )
-            return
+            current_id = self.tinder_browser.get_current_conversation_id()
+            if current_id != reserved_id:
+                self._observe_chat_id(current_id)
+                logger.warning(
+                    f"Active chat changed from reserved {reserved_id} to {current_id}; "
+                    "the old reply will be cancelled."
+                )
+                self._release_conversation_turn(reserved_id)
+            else:
+                return
 
         # Inspect every explicitly AUTO conversation in round-robin order, even
         # when Tinder fails to render a red/unread badge. Message order inside
@@ -280,11 +343,10 @@ class TinderAppController:
                             f"({tinder_id[:8]}...), không phụ thuộc dấu chưa đọc."
                         )
                         try:
-                            await self.browser_mgr.page.goto(
-                                f"https://tinder.com/app/messages/{tinder_id}",
-                                wait_until="networkidle",
-                                timeout=15000,
-                            )
+                            opened = await self.tinder_browser.open_conversation(tinder_id)
+                            if opened:
+                                signature = await self.tinder_browser.get_chat_dom_signature()
+                                self._observe_chat_id(tinder_id, signature)
                         except Exception as e:
                             logger.warning(f"Error opening AUTO chat {tinder_id}: {e}")
 
@@ -299,14 +361,33 @@ class TinderAppController:
         try:
             await self._process_bundled_messages_ready(state, bundled_messages)
         finally:
+            hashes = [m.get("hash") for m in bundled_messages if isinstance(m, dict) and m.get("hash")]
+            self._queued_message_hashes.difference_update(hashes)
             self._release_conversation_turn(state.conversation_id)
 
     async def _process_bundled_messages_ready(self, state: ConversationState, bundled_messages: list[dict[str, str]]):
         """Triggered after debounce expires when messages are ready for AI processing."""
         logger.info(f"Processing AI reply for {state.match_name} ({len(bundled_messages)} messages)")
-        
+
         message_texts = [m["content"] for m in bundled_messages]
         message_hashes = [m["hash"] for m in bundled_messages]
+        queue_ids = {m.get("conversation_id", state.conversation_id) for m in bundled_messages}
+        queue_chat_id = next(iter(queue_ids)) if len(queue_ids) == 1 else "MIXED"
+        generation = self._chat_generation
+        latest_message = message_texts[-1] if message_texts else ""
+        self._log_turn_identity(
+            state_chat_id=state.conversation_id,
+            memory_chat_id=None,
+            queue_chat_id=queue_chat_id,
+            latest_message=latest_message,
+            profile_name=state.match_name,
+        )
+        if queue_chat_id != state.conversation_id:
+            await self._abort_stale_turn(state.conversation_id, message_hashes, "queue belongs to another conversation")
+            return
+        if not self._turn_is_current(state.conversation_id, generation):
+            await self._abort_stale_turn(state.conversation_id, message_hashes, "identity mismatch before memory load")
+            return
 
         # Per-user memory: full history of THIS conversation + saved summary/facts -> final context
         memory_ctx = None
@@ -315,9 +396,31 @@ class TinderAppController:
         except Exception as e:
             logger.warning(f"Memory context failed, falling back to in-memory history: {e}")
 
+        memory_chat_id = memory_ctx.conversation_id if memory_ctx is not None else state.conversation_id
+        self._log_turn_identity(
+            state_chat_id=state.conversation_id,
+            memory_chat_id=memory_chat_id,
+            queue_chat_id=queue_chat_id,
+            latest_message=latest_message,
+            profile_name=state.match_name,
+        )
+        if not self._turn_is_current(state.conversation_id, generation, memory_chat_id):
+            await self._abort_stale_turn(state.conversation_id, message_hashes, "chat changed while loading memory")
+            return
+
         out_messages, is_safe_for_auto, intent, meta = await self.ai_generator.generate_response(
             state, message_texts, memory=memory_ctx
         )
+        self._log_turn_identity(
+            state_chat_id=state.conversation_id,
+            memory_chat_id=memory_chat_id,
+            queue_chat_id=queue_chat_id,
+            latest_message=latest_message,
+            profile_name=state.match_name,
+        )
+        if not self._turn_is_current(state.conversation_id, generation, memory_chat_id):
+            await self._abort_stale_turn(state.conversation_id, message_hashes, "chat changed during reply generation")
+            return
         # They closed a topic ("hong á", "thôi bỏ qua"...): remember it so later turns stay off it.
         if meta.get("closed_topic"):
             try:
@@ -374,21 +477,34 @@ class TinderAppController:
             import random
             import asyncio
             logger.info(f"Auto-dispatching {len(out_messages)} replies to {state.match_name}...")
-            
+
             # Transition to SENDING
             await ReplyService.update_status_raw(reply_id, "SENDING")
             await MessageService.update_messages_status(message_hashes, "SENDING")
-            
+
             all_sent = True
+            stale_turn = False
             sent_messages: list[str] = []
             for i, msg in enumerate(out_messages):
-                sent = await self.sender.send_reply(state.conversation_id, msg, is_auto=True)
+                if not self._turn_is_current(state.conversation_id, generation, memory_chat_id):
+                    stale_turn = True
+                    all_sent = False
+                    logger.warning(f"Cancelled remaining reply messages for stale chat {state.conversation_id}")
+                    break
+                try:
+                    sent = await self.sender.send_reply(state.conversation_id, msg, is_auto=True)
+                except ConversationMismatchError as e:
+                    logger.warning(str(e))
+                    stale_turn = True
+                    sent = False
                 if sent:
                     await self._remember_sent(state.conversation_id, msg)
                     sent_messages.append(msg)
                 else:
                     all_sent = False
-                
+
+                if stale_turn:
+                    break
                 # Delay between multiple messages
                 if i < len(out_messages) - 1:
                     await asyncio.sleep(random.uniform(2.5, 4.5))
@@ -397,10 +513,13 @@ class TinderAppController:
             if all_sent:
                 await ReplyService.mark_sent(reply_id)
                 await MessageService.update_messages_status(message_hashes, "SENT")
-                self.window.reply_panel.clear_suggestion()
+                if self.window.reply_panel.current_conversation_id == state.conversation_id:
+                    self.window.reply_panel.clear_suggestion()
             else:
                 await ReplyService.update_status_raw(reply_id, "FAILED")
                 await MessageService.update_messages_status(message_hashes, "FAILED")
+                if stale_turn:
+                    return
         else:
             logger.info(f"Reply presented as suggestion in GUI for {state.match_name} (Mode={state.mode})")
 
@@ -488,7 +607,13 @@ class TinderAppController:
         """User clicked 'Send' button on GUI."""
         if self.sender:
             logger.info(f"Sending manually approved reply to {conversation_id}...")
-            await self.sender.send_reply(conversation_id, text, is_auto=False)
+            try:
+                sent = await self.sender.send_reply(conversation_id, text, is_auto=False)
+            except ConversationMismatchError as e:
+                logger.warning(f"Manual reply cancelled: {e}")
+                return
+            if not sent:
+                return
             await self._remember_sent(conversation_id, text)
             await self._record_reply_memory(conversation_id, [line for line in text.split("\n") if line.strip()])
             
@@ -522,18 +647,30 @@ class TinderAppController:
 
     async def handle_user_regenerate_reply(self, conversation_id: str):
         state = self.conv_manager.get_state(conversation_id)
-        if state and state.history:
+        generation = self._chat_generation
+        if state and state.history and self._turn_is_current(conversation_id, generation):
             last_msg = state.history[-1]["content"] if state.history else "hi"
             if last_msg:
-                self.window.reply_panel.set_suggestion(conversation_id, "Đang suy nghĩ lại...")
+                if self.window.reply_panel.current_conversation_id == conversation_id:
+                    self.window.reply_panel.set_suggestion(conversation_id, "Đang suy nghĩ lại...")
                 memory_ctx = None
                 try:
                     memory_ctx = await self.memory.build_context(conversation_id, [last_msg])
                 except Exception as e:
                     logger.warning(f"Memory context failed for regenerate: {e}")
+                memory_chat_id = memory_ctx.conversation_id if memory_ctx else conversation_id
+                if not self._turn_is_current(conversation_id, generation, memory_chat_id):
+                    logger.warning(f"Regeneration cancelled for stale chat {conversation_id}")
+                    return
                 out_messages, _, _, regen_meta = await self.ai_generator.generate_response(
                     state, [last_msg], memory=memory_ctx
                 )
+                if (
+                    not self._turn_is_current(conversation_id, generation, memory_chat_id)
+                    or self.window.reply_panel.current_conversation_id != conversation_id
+                ):
+                    logger.warning(f"Regeneration result discarded for stale chat {conversation_id}")
+                    return
                 if out_messages:
                     self._pending_reply_meta[conversation_id] = regen_meta
                     gui_reply_text = "\n".join(out_messages)
@@ -595,12 +732,17 @@ class TinderAppController:
                     msg = msg.strip()
                     if not msg:
                         continue
-                    sent = await self.sender.send_reply(tinder_id, msg, is_auto=True)
+                    try:
+                        sent = await self.sender.send_reply(tinder_id, msg, is_auto=True)
+                    except ConversationMismatchError as e:
+                        logger.warning(f"Pending reply cancelled: {e}")
+                        sent = False
                     if sent:
                         await self._remember_sent(tinder_id, msg)
                     else:
                         all_sent = False
-                        
+                        break
+
                     if i < len(out_messages) - 1:
                         import random
                         await asyncio.sleep(random.uniform(2.5, 4.5))
@@ -624,6 +766,11 @@ class TinderAppController:
                     await MessageService.update_messages_status(message_hashes, "FAILED")
 
     async def handle_match_selected(self, tinder_id: str):
+        # Publish the new ID before any asynchronous DB work. A slow selection A
+        # must never repaint history/profile after the user already selected B.
+        self._ui_selection_generation += 1
+        selection_generation = self._ui_selection_generation
+        self.window.reply_panel.current_conversation_id = tinder_id
         state = self.conv_manager.get_state(tinder_id)
         if state:
             name = state.match_name
@@ -650,15 +797,21 @@ class TinderAppController:
                 bio = ""
                 interests = []
 
+        if selection_generation != self._ui_selection_generation:
+            return
+        recent_msgs = await MessageService.get_recent_messages(tinder_id)
+        if (
+            selection_generation != self._ui_selection_generation
+            or self.window.reply_panel.current_conversation_id != tinder_id
+        ):
+            return
         self.window.conversation_panel.display_profile(
             name=name,
             age=age,
             bio=bio,
             interests=interests
         )
-        recent_msgs = await MessageService.get_recent_messages(tinder_id)
         self.window.conversation_panel.display_messages(recent_msgs)
-        self.window.reply_panel.current_conversation_id = tinder_id
 
     def stop_auto_swipe(self):
         engine = getattr(self, "_swipe_engine", None)
@@ -794,23 +947,33 @@ class TinderAppController:
                 ):
                     async with self._browser_operation_lock:
                         conv_id = self.tinder_browser.get_current_conversation_id()
-                        reserved_id = self._active_conversation_turn
-                        if reserved_id and conv_id != reserved_id:
-                            logger.info(
-                                f"↩️ Giữ nguyên lượt của "
-                                f"{self._active_conversation_name or reserved_id}; "
-                                "chưa chuyển sang người khác."
-                            )
-                            await self.browser_mgr.page.goto(
-                                f"https://tinder.com/app/messages/{reserved_id}",
-                                wait_until="networkidle",
-                                timeout=15000,
-                            )
-                            conv_id = reserved_id
-
                         if not conv_id:
+                            self._observe_chat_id(None)
                             await asyncio.sleep(self.settings.scanner.message_scan_interval or 3.0)
                             continue
+
+                        previous_signature = self._observed_chat_signature
+                        chat_changed = conv_id != self._observed_chat_id
+                        if chat_changed:
+                            # Invalidate A immediately, then wait until B's DOM has
+                            # actually replaced A's rendered bubbles.
+                            self._observe_chat_id(conv_id)
+                        ready, dom_signature = await self.tinder_browser.wait_for_conversation_ready(
+                            conv_id,
+                            previous_signature=previous_signature if chat_changed else "",
+                        )
+                        if not ready or self.tinder_browser.get_current_conversation_id() != conv_id:
+                            continue
+                        self._observe_chat_id(conv_id, dom_signature)
+                        scan_generation = self._chat_generation
+
+                        reserved_id = self._active_conversation_turn
+                        if reserved_id and conv_id != reserved_id:
+                            logger.warning(
+                                f"Conversation changed from reserved {reserved_id} to {conv_id}; "
+                                "cancelling the old turn instead of navigating back."
+                            )
+                            self._release_conversation_turn(reserved_id)
 
                         detector = MessageDetector(self.browser_mgr.page)
                         mode = await MatchService.get_mode(conv_id)
@@ -827,6 +990,23 @@ class TinderAppController:
 
                         msgs = await detector.detect_messages_in_current_chat(
                             conv_id, conv_id, match_name
+                        )
+                        if (
+                            self.tinder_browser.get_current_conversation_id() != conv_id
+                            or self._chat_generation != scan_generation
+                        ):
+                            logger.warning(
+                                f"Discarded DOM read for {conv_id}: active chat changed during detection."
+                            )
+                            continue
+
+                        latest_message = msgs[-1]["content"] if msgs else ""
+                        self._log_turn_identity(
+                            state_chat_id=state.conversation_id,
+                            memory_chat_id=conv_id,
+                            queue_chat_id=conv_id,
+                            latest_message=latest_message,
+                            profile_name=match_name,
                         )
 
                         # A genuinely empty AUTO chat is a new match: send exactly

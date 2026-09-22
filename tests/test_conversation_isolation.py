@@ -4,6 +4,8 @@ import pytest
 from conversations.manager import ConversationManager
 from conversations.queue import ConversationState
 from conversations.debounce import DebounceAccumulator
+from browser.sender import ConversationMismatchError, MessageSender
+from config.settings import get_settings
 
 
 @pytest.mark.asyncio
@@ -101,3 +103,45 @@ async def test_conversation_isolation_and_ordering():
     assert all(m["sender"] == "Hương" for m in huong_state.history)
 
     manager.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_rapid_switch_a_to_b_cancels_a_reply(monkeypatch):
+    """A reply generated for A must never be typed or sent after a fast switch to B."""
+
+    class FakePage:
+        def __init__(self):
+            self.url = "https://tinder.com/app/messages/A"
+            self.locator_called = False
+
+        def locator(self, _selector):
+            self.locator_called = True
+            raise AssertionError("stale A reply reached B's textbox")
+
+    page = FakePage()
+    settings = get_settings()
+    monkeypatch.setattr(settings, "dry_run", False)
+    monkeypatch.setattr(settings, "is_paused", False)
+    monkeypatch.setattr(settings, "emergency_stop", False)
+    monkeypatch.setattr(settings, "global_auto_reply", True)
+    monkeypatch.setattr(settings.automation, "reply_delay_min", 0.01)
+    monkeypatch.setattr(settings.automation, "reply_delay_max", 0.01)
+
+    real_sleep = asyncio.sleep
+    switched = False
+
+    async def switch_during_generation_delay(_seconds):
+        nonlocal switched
+        if not switched:
+            switched = True
+            page.url = "https://tinder.com/app/messages/B"
+        await real_sleep(0)
+
+    monkeypatch.setattr("browser.sender.asyncio.sleep", switch_during_generation_delay)
+    sender = MessageSender(page)
+
+    with pytest.raises(ConversationMismatchError):
+        await sender.send_reply("A", "reply generated from A", is_auto=True)
+
+    assert page.url.endswith("/B")
+    assert page.locator_called is False

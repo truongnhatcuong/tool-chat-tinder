@@ -25,13 +25,5 @@
     "max_retries": 3,
     "max_regenerations": 2,
     "summary_trigger_count": 30
-  },
-  "accounts": [
-    {
-      "id": "default",
-      "name": "Tài khoản 1 (Chính)",
-      "profile_dir": "./data/tinder_browser"
-    }
-  ],
-  "active_account_id": "default"
+  }
 }

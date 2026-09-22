@@ -67,8 +67,13 @@ class MessageSender:
             return False
 
         async with self.operation_lock:
-            # 3. Human-like delay. Keep the browser reserved during this delay;
-            # otherwise another worker can navigate to a different recipient.
+            # A queued reply is valid only while its original conversation remains
+            # active. Never navigate back to the target here: doing so would revive
+            # stale work after the user has deliberately switched A -> B.
+            self._verify_target_conversation(target_conversation_id)
+
+            # 3. Human-like delay. A manual browser click can still change the SPA
+            # while Python holds this lock, so identity is checked again afterward.
             delay = random.uniform(
                 self.settings.automation.reply_delay_min,
                 self.settings.automation.reply_delay_max
@@ -81,7 +86,7 @@ class MessageSender:
 
             # 4. Strict conversation verification. Compare the extracted path ID,
             # never use substring matching for recipient identity.
-            await self._ensure_target_conversation(target_conversation_id)
+            self._verify_target_conversation(target_conversation_id)
 
             # 5. Locate chat input
             chat_inputs = self.page.locator(
@@ -123,20 +128,21 @@ class MessageSender:
 
     def _verify_target_conversation(self, target_conversation_id: str) -> None:
         current_id = self._current_conversation_id()
+        logger.info(
+            "CURRENT_CHAT_ID=%s STATE_CHAT_ID=%s MEMORY_CHAT_ID=%s "
+            "QUEUE_CHAT_ID=%s LATEST_MESSAGE=%r PROFILE_NAME=%r",
+            current_id,
+            target_conversation_id,
+            target_conversation_id,
+            target_conversation_id,
+            "",
+            "",
+        )
         if current_id != target_conversation_id:
             raise ConversationMismatchError(
                 f"Recipient mismatch: expected '{target_conversation_id}', "
                 f"active '{current_id}', URL '{self.page.url}'. Send aborted."
             )
-
-    async def _ensure_target_conversation(self, target_conversation_id: str) -> None:
-        """Navigate to the target and verify its exact conversation identifier."""
-        if self._current_conversation_id() != target_conversation_id:
-            target_url = f"https://tinder.com/app/messages/{target_conversation_id}"
-            logger.info(f"Navigating to conversation {target_conversation_id}...")
-            await self.page.goto(target_url, wait_until="networkidle", timeout=20000)
-            await asyncio.sleep(1.5)
-        self._verify_target_conversation(target_conversation_id)
 
     async def _install_enter_guard(self, target_conversation_id: str) -> None:
         """Block Enter in the page itself unless the exact recipient is active."""

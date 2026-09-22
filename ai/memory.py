@@ -89,7 +89,11 @@ class ConversationContext:
 
     def render(self) -> str:
         """Text block dropped into the user prompt (facts, summary, recent, new message)."""
-        facts = "\n".join(f"- {f}" for f in self.facts) or "- (chưa có)"
+        facts_them = [f for f in self.facts if f.startswith("[họ]")]
+        facts_me = [f for f in self.facts if f.startswith("[tôi]")]
+        facts_other = [f for f in self.facts if f not in facts_them and f not in facts_me]
+        them_text = "\n".join(f"- {f}" for f in facts_them + facts_other) or "- (chưa có)"
+        me_text = "\n".join(f"- {f}" for f in facts_me) or "- (chưa có)"
         asked = "\n".join(f"- {q}" for q in self.asked_by_me) or "- (chưa hỏi gì)"
         questions_stored = "\n".join(f"- {q}" for q in self.questions_asked[-MAX_QUESTIONS_STORED:]) or "- (chưa có)"
         guidance_block = f"\n{self.guidance}\n" if self.guidance else ""
@@ -100,7 +104,8 @@ class ConversationContext:
         new = "\n".join(self.new_messages)
         return (
             f"CONVERSATION_STAGE: {self.stage} ({self.total_messages} tin)\n\n"
-            f"THÔNG TIN ĐÃ BIẾT VỀ HỌ (chỉ dùng những điều này, không bịa thêm):\n{facts}\n\n"
+            f"FACT VỀ HỌ (đối phương trong conversation này):\n{them_text}\n\n"
+            f"FACT VỀ TÔI ĐÃ XUẤT HIỆN TRONG CHAT:\n{me_text}\n\n"
             f"TÓM TẮT HỘI THOẠI CŨ:\n{self.summary or '(chưa có, cuộc trò chuyện còn ngắn)'}\n\n"
             f"CÁCH XƯNG HÔ: {self.address}\n"
             f"PHONG CÁCH CỦA HỌ: {self.style_them}\n"

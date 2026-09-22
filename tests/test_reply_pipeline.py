@@ -408,15 +408,13 @@ def test_verbatim_old_phrase_plus_new_text_still_blocked_as_repeat_reaction():
 
 # ----------------------------- never leave them hanging -----------------------------
 
-from ai.fallback_replies import QUESTIONS, REACTIONS  # noqa: E402
+from ai.fallback_replies import REACTIONS  # noqa: E402
 
 
 def test_every_bank_line_passes_the_quality_check_on_a_fresh_conversation():
     ctx = QualityContext()
     for text in REACTIONS:
         assert check_reply(reply([text], reply_style="react"), ctx) == [], text
-    for text, key in QUESTIONS:
-        assert check_reply(reply([text], reply_style="question", question_key=key), ctx) == [], text
 
 
 def _stuck_state():
@@ -456,62 +454,37 @@ async def test_rescue_prompt_lists_reasons_and_recent_messages_and_its_reply_is_
 async def test_gave_up_only_when_model_and_bank_all_fail(monkeypatch):
     import ai.fallback_replies as fb
     monkeypatch.setattr(fb, "REACTIONS", [])
-    monkeypatch.setattr(fb, "QUESTIONS", [])
-    monkeypatch.setattr(fb, "load_question_bank", lambda *a, **k: [])
     dup = js(["vậy chắc phải từ từ thôi á :))"], reply_style="react")
     llm = ScriptedLLM([dup, dup, dup, dup])
     out, safe, _, meta = await ResponseGenerator(llm).generate_response(_stuck_state(), ["vừa sức th"])
     assert out == [] and safe is False and meta["gave_up"] is True
 
 
-# ----------------------------- cau_hoi.md as the rescue source -----------------------------
+# ----------------------------- cau_hoi.md remains guidance-only -----------------------------
 
-from ai.fallback_replies import _ranked_questions, load_question_bank, pick_fallback  # noqa: E402
-
-
-def test_question_bank_is_loaded_from_cau_hoi_md():
-    bank = load_question_bank()
-    texts = [t for t, _, _ in bank]
-    assert len(bank) >= 50
-    assert "rảnh b hay làm gì z?" in texts                       # straight from cau_hoi.md section 4
-    assert not any("xinh" in t for t in texts)                    # compliment section is skipped
-    assert all(is_q for is_q in (True,))                          # (sanity placeholder, real check below)
-    from ai.question_detector import is_question
-    assert all(is_question(t) for t in texts)
+from ai.fallback_replies import load_question_bank, pick_fallback  # noqa: E402
 
 
-def test_every_cau_hoi_question_passes_the_quality_check():
-    for text, key, section in load_question_bank():
-        assert check_reply(reply([text], reply_style="question", question_key=key), QualityContext()) == [], (section, text)
+def test_cau_hoi_is_not_loaded_as_executable_templates():
+    assert load_question_bank() == []
 
 
-def test_ranking_prefers_the_topic_being_talked_about():
-    import random
-    ctx = QualityContext(dialogue=[("them", "tui hay xem phim kinh dị lắm")], new_texts=["mê phim lắm á"])
-    top = [t for t, _ in _ranked_questions(ctx, random.Random(1))[:5]]
-    assert any("phim" in t for t in top), top
-
-
-def test_pick_fallback_uses_cau_hoi_questions_and_respects_the_streak():
-    bank_texts = {t for t, _, _ in load_question_bank()}
-    seen_question = False
-    for _ in range(20):
-        picked = pick_fallback(QualityContext())
-        assert picked is not None
-        if any(m in bank_texts for m in picked.messages):
-            seen_question = True
-    assert seen_question                                          # questions come from cau_hoi.md
-
-    streak = QualityContext(last_asked=[True, True], last_styles=["question", "question"])
-    for _ in range(20):
-        picked = pick_fallback(streak)
-        assert picked is not None and not picked.asks_question    # asked twice: reactions only
+def test_pick_fallback_never_injects_a_random_question():
+    for ctx in (
+        QualityContext(),
+        QualityContext(last_asked=[True, True], last_styles=["question", "question"]),
+    ):
+        for _ in range(20):
+            picked = pick_fallback(ctx)
+            assert picked is not None
+            assert not picked.asks_question
+            assert picked.question_key == ""
 
 
 @pytest.mark.asyncio
-async def test_fallback_question_is_persisted_like_any_other_question():
+async def test_fallback_after_parse_failures_is_reaction_only():
     llm = ScriptedLLM(["x", "x", "x", "x"])                       # unparseable every time
     out, _, _, meta = await ResponseGenerator(llm).generate_response(_state(), ["nay rảnh nè"])
     assert out and meta["fallback"] == "bank"
-    if meta["asks_question"]:
-        assert meta["question_key"].startswith("cau_hoi:") and meta["question_texts"]
+    assert meta["asks_question"] is False
+    assert meta["question_key"] == "" and meta["question_texts"] == []

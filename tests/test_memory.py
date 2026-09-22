@@ -6,6 +6,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from ai.memory import (
+    ConversationContext,
     ConversationMemory,
     analyze_address,
     detect_stage,
@@ -97,6 +98,29 @@ async def test_summarize_failure_keeps_data(session_factory):
     mem = ConversationMemory(FakeLLM("not json"), session_factory)
     ctx = await mem.build_context("A", [])
     assert ctx.summary == "" and ctx.facts == []
+
+
+def test_render_separates_their_facts_from_my_facts():
+    ctx = ConversationContext(
+        conversation_id="A",
+        total_messages=2,
+        stage="NEW_MATCH",
+        summary="",
+        facts=["[họ] học kinh tế", "[tôi] làm dev"],
+        recent=[],
+        address="mình - bạn",
+        style_them="ngắn",
+        style_me="ngắn",
+        asked_by_me=[],
+        topic="học và làm",
+    )
+
+    rendered = ctx.render()
+    their_section = rendered.split("FACT VỀ HỌ", 1)[1].split("FACT VỀ TÔI", 1)[0]
+    my_section = rendered.split("FACT VỀ TÔI", 1)[1].split("TÓM TẮT", 1)[0]
+    assert "[họ] học kinh tế" in their_section
+    assert "[tôi] làm dev" not in their_section
+    assert "[tôi] làm dev" in my_section
 
 
 def test_helpers():

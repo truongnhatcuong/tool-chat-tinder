@@ -316,6 +316,31 @@ def find_closed_topic_problems(reply: AIReply, ctx: QualityContext) -> list[str]
     return problems
 
 
+_ECHO_LEAD_RE = re.compile(r"^(vậy|z|thế|vậy là|z là|thế là)")
+
+
+def find_echo_replies(messages: list[str], new_texts: list[str]) -> list[str]:
+    """Parroting: a short reply whose every topic word is already in their newest message.
+
+    Such a reply ("vậy là cũng vừa sức á" after "vừa sức th") adds no new idea.
+    Real questions are allowed, since asking about their word deepens the topic.
+    """
+    theirs: set[str] = set()
+    for t in new_texts:
+        theirs |= _content_tokens(t)
+    if not theirs:
+        return []
+    problems: list[str] = []
+    for msg in messages:
+        n = normalize(msg)
+        tokens = _content_tokens(msg)
+        if not tokens or len(n.split()) > 7:
+            continue
+        if tokens <= theirs and (_ECHO_LEAD_RE.match(n) or not is_question(msg)):
+            problems.append(f"nhại lại lời họ vừa nói, chưa có ý mới: '{msg}'")
+    return problems
+
+
 def find_repeated_questions(reply: AIReply, ctx: QualityContext) -> list[str]:
     """Same topic asked again: by question_key, by similar wording, or already told by them."""
     problems: list[str] = []
@@ -387,6 +412,7 @@ def check_reply(reply: AIReply, ctx: QualityContext) -> list[str]:
     problems += find_closed_topic_problems(reply, ctx)
     problems += find_violations(reply.messages, ctx.their_texts)            # persona/hard rules
     problems += find_repeated_questions(reply, ctx)
+    problems += find_echo_replies(reply.messages, ctx.new_texts)
     problems += find_style_problems(reply, ctx)
     seen: set[str] = set()
     return [p for p in problems if not (p in seen or seen.add(p))]

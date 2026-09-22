@@ -7,7 +7,7 @@
     "longitude": 108.2022
   },
   "scanner": {
-    "match_scan_interval": 4.0,
+    "match_scan_interval": 3.0,
     "message_scan_interval": 10.0
   },
   "automation": {
@@ -25,5 +25,13 @@
     "max_retries": 3,
     "max_regenerations": 2,
     "summary_trigger_count": 30
-  }
+  },
+  "accounts": [
+    {
+      "id": "default",
+      "name": "Tài khoản 1 (Chính)",
+      "profile_dir": "./data/tinder_browser"
+    }
+  ],
+  "active_account_id": "default"
 }

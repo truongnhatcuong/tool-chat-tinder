@@ -80,7 +80,8 @@ class MatchScanner:
 
             badge = item.locator(
                 "span[class*='badge'], [data-testid='unread-indicator'], "
-                "[aria-label='New Match'], [aria-label='Tương hợp mới']"
+                "[aria-label='New Match'], [aria-label='Tương hợp mới'], "
+                "[aria-label='New Message'], [aria-label='Tin nhắn mới']"
             )
             results.append({
                 "tinder_id": match_id,

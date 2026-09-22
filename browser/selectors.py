@@ -18,7 +18,11 @@ TINDER_SELECTORS = {
     ],
     "unread_indicator": [
         "span[class*='badge']",
-        "[data-testid='unread-indicator']"
+        "[data-testid='unread-indicator']",
+        "[aria-label='New Match']",
+        "[aria-label='Tương hợp mới']",
+        "[aria-label='New Message']",
+        "[aria-label='Tin nhắn mới']"
     ],
     "match_name": [
         "h3",

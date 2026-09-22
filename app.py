@@ -917,12 +917,37 @@ class TinderAppController:
                     from browser.match_opener import MatchOpenerEngine
                     from services.opener_service import OpenerService
                     engine = MatchOpenerEngine(self.browser_mgr.page, OpenerService(self.llm_client))
-                    self.window.status_bar.showMessage("💌 Đang tự động mở lời (thả thính) cho các match mới...")
-                    async with self._browser_operation_lock:
+                    
+                    # Instead of holding lock for entire batch, we fetch matches outside lock
+                    # and process them one by one, yielding lock to allow priority messages to run.
+                    matches = await engine.extract_match_list()
+                    if matches:
+                        self.window.status_bar.showMessage("💌 Đang tự động mở lời (thả thính) cho các match mới...")
+                    
+                    sent = 0
+                    for match in matches:
+                        if sent >= 10:
+                            break
+                        
+                        # Break if there's a red dot waiting to be processed!
+                        if self._unread_conversations:
+                            logger.info("🚨 Có tin nhắn chờ (chấm đỏ), tạm dừng thả thính để ưu tiên rep!")
+                            break
+                            
                         if self._active_conversation_turn:
-                            sent = 0
-                        else:
-                            sent = await engine.run_openers_on_all_new_matches(max_openers=10)
+                            # A conversation turn is actively running, yield and stop batch
+                            break
+                            
+                        async with self._browser_operation_lock:
+                            try:
+                                if await engine.run_opener_on_single_match(match):
+                                    sent += 1
+                            except Exception as e:
+                                logger.warning(f"Error auto-opener single match: {e}")
+                                
+                        # Tiny yield to ensure scanner/monitor can grab the lock if needed
+                        await asyncio.sleep(0.5)
+
                     if sent > 0:
                         self.window.status_bar.showMessage(f"💌 Hoàn tất mở lời: Đã tự động gửi {sent} câu mở lời!", 8000)
             except asyncio.CancelledError:

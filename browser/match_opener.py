@@ -170,6 +170,63 @@ class MatchOpenerEngine:
 
         return True
 
+    async def run_opener_on_single_match(self, item: dict[str, str]) -> bool:
+        """
+        Process a single match. Returns True if an opener was sent, False otherwise.
+        """
+        conv_id = item["conversation_id"]
+        name = item["name"]
+
+        # 1. Check mode
+        from services.match_service import MatchService
+        mode = await MatchService.get_mode(conv_id)
+        if mode != "AUTO":
+            logger.info(f"Match {name} is {mode}. Skipping opener (AUTO required).")
+            return False
+
+        # 2. Check local database to avoid unnecessary navigation
+        recent_msgs = await MessageService.get_recent_messages(conv_id, limit=1)
+        if recent_msgs:
+            logger.info(f"Conversation with {name} already has messages in DB. Skipping opener.")
+            return False
+
+        # 3. Navigate to conversation
+        url = f"https://tinder.com/app/messages/{conv_id}"
+        logger.info(f"Opening chat with {name} ({conv_id[:8]}...)...")
+        await self.page.goto(url, wait_until="networkidle", timeout=20000)
+        await asyncio.sleep(2.0)
+
+        # Dismiss any popup if blocking
+        from browser.popup_handler import dismiss_blocking_popups
+        await dismiss_blocking_popups(self.page)
+
+        # 4. Check DOM for existing messages (in case DB was empty but chat isn't)
+        if await self.has_existing_messages():
+            logger.info(f"Conversation with {name} already has messages in DOM. Skipping opener.")
+            return False
+
+        # 5. Read profile details
+        profile = await self.read_current_chat_profile(default_name=name)
+        logger.info(
+            f"Match profile: Name={profile['name']}, Age={profile['age']}, Bio='{profile['bio'][:30]}', Goal='{profile['goal']}'"
+        )
+
+        # 6. Generate flirty / subtle opener
+        opener = await self.opener_service.generate_opener(profile)
+        logger.info(f"Opener crafted for {name}: \"{opener}\"")
+
+        # 7. Send opener
+        sent = await self.send_opener_to_current_chat(conv_id, opener)
+        
+        if sent:
+            # Natural delay between openers (4 - 8s)
+            delay = random.uniform(4.0, 8.0)
+            logger.info(f"Cooling down for {delay:.1f}s before next action...")
+            await asyncio.sleep(delay)
+            return True
+
+        return False
+
     async def run_openers_on_all_new_matches(self, max_openers: int = 10) -> int:
         """
         Iterate through all matches in sidebar.
@@ -186,51 +243,12 @@ class MatchOpenerEngine:
             if not self._is_running or sent_count >= max_openers:
                 break
 
-            conv_id = item["conversation_id"]
-            name = item["name"]
-
-            # An opener may only be sent to a person whose persisted mode is AUTO.
-            # New matches now inherit AUTO, while users can still turn any match OFF.
-            from services.match_service import MatchService
-            mode = await MatchService.get_mode(conv_id)
-            if mode != "AUTO":
-                logger.info(f"Match {name} is {mode}. Skipping opener (AUTO required).")
-                continue
-
-            # Open conversation
-            url = f"https://tinder.com/app/messages/{conv_id}"
-            logger.info(f"Opening chat with {name} ({conv_id[:8]}...)...")
-            await self.page.goto(url, wait_until="networkidle", timeout=20000)
-            await asyncio.sleep(2.0)
-
-            # Dismiss any popup if blocking
-            from browser.popup_handler import dismiss_blocking_popups
-            await dismiss_blocking_popups(self.page)
-
-            # Check if messages already exist
-            if await self.has_existing_messages():
-                logger.info(f"Conversation with {name} already has messages. Skipping opener.")
-                continue
-
-            # Read profile details
-            profile = await self.read_current_chat_profile(default_name=name)
-            logger.info(
-                f"Match profile: Name={profile['name']}, Age={profile['age']}, Bio='{profile['bio'][:30]}', Goal='{profile['goal']}'"
-            )
-
-            # Generate flirty / subtle opener
-            opener = await self.opener_service.generate_opener(profile)
-            logger.info(f"Opener crafted for {name}: \"{opener}\"")
-
-            # Send opener
-            sent = await self.send_opener_to_current_chat(conv_id, opener)
-            if sent:
-                sent_count += 1
-
-            # Natural delay between openers (4 - 8s)
-            delay = random.uniform(4.0, 8.0)
-            logger.info(f"Cooling down for {delay:.1f}s before next opener...")
-            await asyncio.sleep(delay)
+            try:
+                sent = await self.run_opener_on_single_match(item)
+                if sent:
+                    sent_count += 1
+            except Exception as e:
+                logger.warning(f"Error processing opener for {item.get('name')}: {e}")
 
         logger.info(f"Completed auto-opener batch. Total openers sent: {sent_count}")
         self._is_running = False

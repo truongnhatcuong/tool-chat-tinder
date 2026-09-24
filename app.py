@@ -58,7 +58,7 @@ class TinderAppController:
         self._giveup_counts: dict[str, int] = {}
         self._unread_conversations: set[str] = set()
         self._queued_message_hashes: set[str] = set()
-        self._auto_scan_index = 0
+        self._auto_scan_queue: list[str] = []
         self._opener_sent_or_checked: set[str] = set()
         # Once a waiting conversation is detected, keep Tinder on that person
         # through debounce, AI generation, and every outgoing message. Only the
@@ -327,8 +327,18 @@ class TinderAppController:
                 if unread:
                     target = unread[0]
                 else:
-                    target = auto_matches[self._auto_scan_index % len(auto_matches)]
-                    self._auto_scan_index += 1
+                    # Sync queue with current auto_matches
+                    current_ids = {m["tinder_id"] for m in auto_matches}
+                    self._auto_scan_queue = [uid for uid in self._auto_scan_queue if uid in current_ids]
+                    for m in auto_matches:
+                        if m["tinder_id"] not in self._auto_scan_queue:
+                            self._auto_scan_queue.append(m["tinder_id"])
+                    
+                    # Pop front and push to back
+                    target_id = self._auto_scan_queue.pop(0)
+                    self._auto_scan_queue.append(target_id)
+                    
+                    target = next((m for m in auto_matches if m["tinder_id"] == target_id), auto_matches[0])
 
                 tinder_id = target["tinder_id"]
                 async with self._browser_operation_lock:

@@ -55,43 +55,65 @@ class MatchScanner:
 
     async def _collect_visible_links(self, source_tab: str) -> list[dict[str, Any]]:
         """Collect conversation links rendered by the currently selected tab."""
-        results: list[dict[str, Any]] = []
-        items = self.page.locator("a[href*='/app/messages/']")
-        count = await items.count()
+        results_map: dict[str, dict[str, Any]] = {}
+        
+        # Scroll a few times to force virtualized list to render more items
+        # We limit to 5 scrolls to avoid blocking the scanner for too long.
+        max_scrolls = 4
+        
+        for scroll_idx in range(max_scrolls + 1):
+            items = self.page.locator("a[href*='/app/messages/']")
+            count = await items.count()
 
-        for i in range(count):
-            item = items.nth(i)
-            href = await item.get_attribute("href") or ""
-            match = re.search(r"/app/messages/([a-zA-Z0-9_\-]+)", href)
-            if not match:
-                continue
+            for i in range(count):
+                item = items.nth(i)
+                href = await item.get_attribute("href") or ""
+                match = re.search(r"/app/messages/([a-zA-Z0-9_\-]+)", href)
+                if not match:
+                    continue
 
-            match_id = match.group(1)
-            name = ""
-            aria_label = await item.get_attribute("aria-label")
-            if aria_label:
-                name = aria_label.split(".")[0].replace("Start chat", "").strip()
+                match_id = match.group(1)
+                name = ""
+                aria_label = await item.get_attribute("aria-label")
+                if aria_label:
+                    name = aria_label.split(".")[0].replace("Start chat", "").strip()
 
-            if not name or name == "New Match":
-                text_content = await item.inner_text()
-                lines = [line.strip() for line in text_content.split("\n") if line.strip()]
-                if lines:
-                    name = lines[0]
+                if not name or name == "New Match":
+                    text_content = await item.inner_text()
+                    lines = [line.strip() for line in text_content.split("\n") if line.strip()]
+                    if lines:
+                        name = lines[0]
 
-            badge = item.locator(
-                "span[class*='badge'], [data-testid='unread-indicator'], "
-                "[aria-label='New Match'], [aria-label='Tương hợp mới'], "
-                "[aria-label='New Message'], [aria-label='Tin nhắn mới']"
-            )
-            results.append({
-                "tinder_id": match_id,
-                "conversation_id": match_id,
-                "name": name or "Match",
-                "has_unread": await badge.count() > 0,
-                "source_tab": source_tab,
-            })
+                badge = item.locator(
+                    "span[class*='badge'], [data-testid='unread-indicator'], "
+                    "[aria-label='New Match'], [aria-label='Tương hợp mới'], "
+                    "[aria-label='New Message'], [aria-label='Tin nhắn mới']"
+                )
+                
+                results_map[match_id] = {
+                    "tinder_id": match_id,
+                    "conversation_id": match_id,
+                    "name": name or "Match",
+                    "has_unread": await badge.count() > 0,
+                    "source_tab": source_tab,
+                }
+                
+            if scroll_idx < max_scrolls and count > 0:
+                try:
+                    await items.nth(count - 1).scroll_into_view_if_needed(timeout=1000)
+                    await asyncio.sleep(0.3)
+                except Exception:
+                    break
 
-        return results
+        # Optionally scroll back to top so the user view isn't stuck at the bottom
+        try:
+            items = self.page.locator("a[href*='/app/messages/']")
+            if await items.count() > 0:
+                await items.first.scroll_into_view_if_needed(timeout=1000)
+        except Exception:
+            pass
+
+        return list(results_map.values())
 
     async def scan_matches_once(self) -> list[dict[str, Any]]:
         """Scan both virtualized sidebar tabs and merge people by Tinder ID."""

@@ -13,7 +13,7 @@
   "automation": {
     "message_debounce_seconds": 15.0,
     "reply_delay_min": 2.0,
-    "reply_delay_max": 4.0,
+    "reply_delay_max": 3.0,
     "max_parallel_conversations": 1,
     "max_ai_replies_per_minute": 3,
     "default_match_mode": "AUTO"

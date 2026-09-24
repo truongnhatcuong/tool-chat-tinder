@@ -28,9 +28,9 @@ from database.repository import (
 )
 from utils.logger import logger
 
-RECENT_LIMIT = 40          # normal window (spec: 20-50)
-RECENT_MAX = 50            # hard cap when extending the window with unsummarized older msgs
-SUMMARIZE_MIN_OLD = 12     # fold old messages into memory only when at least this many
+RECENT_LIMIT = 5           # normal window (rút ngắn để tiết kiệm token)
+RECENT_MAX = 10             # hard cap when extending the window with unsummarized older msgs
+SUMMARIZE_MIN_OLD = 4      # fold old messages into memory only when at least this many
 SUMMARIZE_CHUNK = 80       # max messages sent to the LLM per summarize call
 MAX_FACTS = 30
 MAX_ASKED = 12

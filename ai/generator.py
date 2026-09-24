@@ -233,7 +233,7 @@ class ResponseGenerator:
             interests=state.profile.get("interests"),
             summary=state.summary,
             style=style_str,
-            recent_history=state.history[-15:],
+            recent_history=state.history[-5:],
             new_message=combined_new_message,
             memory_block=memory.render() if memory else None,
             guidance=guidance,

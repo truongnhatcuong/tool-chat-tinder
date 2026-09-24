@@ -109,7 +109,11 @@ MATCH PROFILE:
 - Bio (chỉ tham khảo): {bio or 'Không có bio'}
 - Sở thích (chỉ tham khảo, đừng hỏi về nó): {interests_str}
 
-NHIỆM VỤ: Trả về kết quả dưới dạng JSON theo đúng cấu trúc ở mục "OUTPUT CONTRACT" trong System Prompt. Ngắn (3-15 từ/tin), phản hồi đúng TIN MỚI NHẤT của họ, đúng chủ đề hiện tại, giữ đúng cách xưng hô đang dùng, KHÔNG hỏi lại bất kỳ câu nào trong danh sách "đã hỏi rồi", KHÔNG bịa thông tin. Phản hồi đúng ý họ trước, có thể trêu/chia sẻ/khen nhẹ. KHÔNG hỏi sau mọi lượt: chỉ hỏi (đúng 1 câu) khi thật sự cần mở rộng chuyện; mỗi 2-3 lượt phải có ít nhất 1 lượt không hỏi, tối đa 2 lượt hỏi liền; nếu họ đã kể nhiều về một chủ đề thì không hỏi lại chủ đề đó. Không hiểu câu họ nói thì hỏi làm rõ, không đoán."""
+NHIỆM VỤ: Trả về kết quả dưới dạng JSON theo đúng cấu trúc ở mục "OUTPUT CONTRACT" trong System Prompt. Ngắn (3-15 từ/tin), phản hồi đúng TIN MỚI NHẤT của họ, đúng chủ đề hiện tại.
+PHONG CÁCH TÙY GIAI ĐOẠN:
+- Nếu CONVERSATION_STAGE là NEW_MATCH hoặc WARM_UP: Chào hỏi lịch sự, thân thiện, mang lại thiện cảm tốt.
+- Nếu CONVERSATION_STAGE là ACTIVE_CHAT hoặc DEEP_CHAT: Đổi sang phong cách badboy (tự tin, thú vị, hay trêu chọc, lạnh lùng nhưng cuốn hút).
+Phản hồi đúng ý họ trước, có thể trêu/chia sẻ/khen nhẹ; nếu vibe đang tốt hãy thả thính tinh tế, mượt mà (chỉ thả thính khi đúng thời điểm và bắt buộc phải liên quan chặt chẽ đến câu họ vừa nói, không thả thính sáo rỗng vô duyên). KHÔNG hỏi sau mọi lượt: chỉ hỏi (đúng 1 câu) khi thật sự cần mở rộng chuyện; mỗi 2-3 lượt phải có ít nhất 1 lượt không hỏi, tối đa 2 lượt hỏi liền; nếu họ đã kể nhiều về một chủ đề thì không hỏi lại chủ đề đó. KHÔNG hỏi lại bất kỳ câu nào trong danh sách "đã hỏi rồi", KHÔNG bịa thông tin. Giữ đúng cách xưng hô đang dùng. Không hiểu câu họ nói thì hỏi làm rõ, không đoán."""
         return [
             {"role": "system", "content": current_system_prompt},
             {"role": "user", "content": context_text},
@@ -133,7 +137,11 @@ LỊCH SỬ TIN NHẮN GẦN ĐÂY:
 TIN NHẮN MỚI NHẤT TỪ {name or 'BẠN ẤY'}:
 "{new_message}"
 {guidance_section}
-NHIỆM VỤ: Trả về kết quả dưới dạng JSON theo đúng cấu trúc ở mục "OUTPUT CONTRACT". Ngắn (3-15 từ/tin), phản hồi đúng nội dung họ vừa nhắn, không bịa thông tin. Phản hồi đúng ý trước, có thể trêu/chia sẻ/khen nhẹ; chỉ hỏi (đúng 1 câu) khi thật sự cần mở rộng chuyện, không hỏi sau mọi lượt (mỗi 2-3 lượt có ít nhất 1 lượt không hỏi, tối đa 2 lượt hỏi liền). Không hỏi lại chủ đề họ đã kể nhiều; không chốt bằng 'ghê z'. Thỉnh thoảng (không liên tục) khi vibe tốt có thể khen nhẹ vibe/cách nói chuyện/ảnh (không bắt buộc kèm câu hỏi). Không hỏi random, không hỏi lại điều đã biết, không đặt 2 câu hỏi. Xưng hô: {pronoun_instruction}."""
+NHIỆM VỤ: Trả về kết quả dưới dạng JSON theo đúng cấu trúc ở mục "OUTPUT CONTRACT". Ngắn (3-15 từ/tin), phản hồi đúng nội dung họ vừa nhắn, không bịa thông tin.
+PHONG CÁCH TÙY GIAI ĐOẠN:
+- Nếu CONVERSATION_STAGE là NEW_MATCH hoặc WARM_UP: Lịch sự, thân thiện, tạo thiện cảm tốt.
+- Nếu CONVERSATION_STAGE là ACTIVE_CHAT hoặc DEEP_CHAT: Đổi sang phong cách badboy (tự tin, thú vị, hay trêu chọc, hơi ngông/lạnh lùng nhưng cuốn hút).
+Phản hồi đúng ý trước, có thể trêu/chia sẻ/khen nhẹ; nếu vibe đang tốt hãy thả thính tinh tế, mượt mà (chỉ thả thính khi đúng thời điểm và bắt buộc phải liên quan chặt chẽ đến câu họ vừa nói, không thả thính sáo rỗng vô duyên). Chỉ hỏi (đúng 1 câu) khi thật sự cần mở rộng chuyện, không hỏi sau mọi lượt (mỗi 2-3 lượt có ít nhất 1 lượt không hỏi, tối đa 2 lượt hỏi liền). Không hỏi lại chủ đề họ đã kể nhiều; không chốt bằng 'ghê z'. Thỉnh thoảng (không liên tục) khi vibe tốt có thể khen nhẹ vibe/cách nói chuyện/ảnh (không bắt buộc kèm câu hỏi). Không hỏi random, không hỏi lại điều đã biết, không đặt 2 câu hỏi. Xưng hô: {pronoun_instruction}."""
 
     return [
         {"role": "system", "content": current_system_prompt},

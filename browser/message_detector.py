@@ -119,7 +119,7 @@ class MessageDetector:
                     } else {
                         // Screen-reader label "<Name>:\\n<message>" on their bubbles
                         // Tinder now sometimes prepends "Đã gửi vào hh:mm\\nhh:mm\\n"
-                        const lm = rawText.match(/(?:^|\\\\n)([^\\\\n:]{1,40}):\\\\s*\\\\n([\\\\s\\\\S]+)$/);
+                        const lm = rawText.match(/(?:^|\\n)([^\\n:]{1,40}):\\s*\\n([\\s\\S]+)$/);
                         if (lm) {
                             text = lm[2].trim();
                             isOutgoing = false;
